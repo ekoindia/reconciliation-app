@@ -104,6 +104,9 @@ def test_debit_fee_vs_bank_debit():
 
 
 # ── Bank statement parsers (skipped if samples absent) ────────────────────────
+# Fixture filenames are synthetic placeholders; drop your own bank-statement
+# samples under SAMPLE_DIR with these names (or point EVALUE_SAMPLE_DIR at them).
+# Tests skip automatically when a sample is absent, so CI is unaffected.
 PARSERS = [
     ("AXIS BANK", "Axis Bank/axis-sample.csv"),
     ("BANK OF INDIA", "bank of india/boi-sample.xls"),
