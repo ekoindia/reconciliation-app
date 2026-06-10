@@ -5,6 +5,40 @@ How Eko Recon is put together, end to end. Read this before touching anything in
 
 ## Stack & topology
 
+```mermaid
+flowchart LR
+    subgraph fe["Frontend — React / Vite / Tailwind"]
+        spa["SPA pages"]
+        ax["api.js<br/>Bearer · 401 redirect · UTC→IST interceptor"]
+    end
+    subgraph routes["routes/ — HTTP endpoints"]
+        up["upload.py<br/>ingest · FREC / WLR · presets"]
+        rc["recon.py<br/>recon ops · Open Items"]
+        rep["reports.py"]
+        prod["product routers<br/>evalue · bbps · sbi_kiosk · aeps · qr · settlement_bank"]
+        plat["platform<br/>auth · admin · audit · insights · workflow · auto_upload"]
+    end
+    subgraph core["core/ — engines"]
+        me["matching_engine.py"]
+        ev["evalue_engine.py"]
+        bb["bbps_engine.py"]
+        ig["ingest_service.py"]
+        sc["scheduler.py"]
+        au["auth.py · maker_checker.py"]
+    end
+    db[("models/database.py<br/>43 models · migrations · seeders")]
+    inst[/"instance/<br/>bank account registry · gitignored"/]
+
+    ax -->|"/api"| routes
+    up --> core
+    rc --> core
+    prod --> core
+    core --> db
+    sc --> ig
+    ig -.->|"imports helpers — layering inversion"| up
+    db --> inst
+```
+
 - **Backend** — FastAPI monolith ([backend/main.py](../backend/main.py)), SQLAlchemy over
   SQLite by default (`DATABASE_URL` switches to MySQL/PostgreSQL), APScheduler
   (Asia/Kolkata timezone) for cron work. In production the backend serves the built React
@@ -36,6 +70,34 @@ How Eko Recon is put together, end to end. Read this before touching anything in
 > tests in place — see [behavior-contract.md](behavior-contract.md).
 
 ## End-to-end data flow
+
+```mermaid
+flowchart TD
+    u["1 · Upload<br/>POST /upload/file<br/>parse · auto header · multi-page PDF"]
+    wlr{"WLR / FREC<br/>wrong-file check"}
+    map["Preview + suggested<br/>column mapping"]
+    cm["2 · Ingest<br/>POST /upload/confirm-mapping"]
+    slot{"Slot guard +<br/>SHA-256 file hash"}
+    cls["Per-row classify<br/>reversal → fee → txn …<br/>+ per-partner filters"]
+
+    u --> wlr
+    wlr -->|"fail"| block1["422 hard block"]
+    wlr -->|"pass"| map --> cm --> slot
+    slot -->|"duplicate"| block2["409 hard block<br/>admin force only"]
+    slot -->|"ok"| cls --> a1
+
+    subgraph auto["3 · Auto-recon chain — order is load-bearing"]
+        direction LR
+        a1["reversal match"] --> a2["run_reconciliation<br/>counterpart-gated"] --> a3["NEFT D+1"] --> a4["internal self-match"]
+    end
+
+    a4 --> match["4 · Core matching<br/>priority rules · first-match-wins<br/>±₹1 → matched · else amount_mismatch"]
+    match --> sp["5 · Special passes<br/>reversal · NEFT D+1 · contra · interbank IBT- · carry-forward CFW-"]
+    sp --> hw["6 · Human workflow<br/>override · ≥10-char remark · maker-checker · adhoc tag"]
+    hw --> oi["7 · Open Items<br/>universal exceptions across core + BBPS + E-Value"]
+    oi --> out["8 · Outputs<br/>Excel exports · cert PDF · EOD digest · escalation email"]
+    out --> plat["9 · Platform<br/>JWT / API-key · audit log · startup self-heal"]
+```
 
 1. **Upload** — `POST /api/upload/file`: parse file (auto header detection, multi-page PDF),
    run WLR wrong-file detection (422 hard-block) and FREC format check, auto-detect column
