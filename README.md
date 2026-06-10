@@ -73,6 +73,39 @@ The image builds the frontend and serves it from the backend, so one container i
 
 ## Architecture
 
+The whole platform is a single FastAPI process: it exposes the JSON API, runs the
+matching engines and the scheduler in-process, and (in production) serves the built React
+SPA. One container is the whole app.
+
+```mermaid
+flowchart TB
+    subgraph client["Browser · React 18 SPA"]
+        pages["Pages<br/>Upload · Open Items · Reports · Admin"]
+        apijs["utils/api.js<br/>axios · JWT header · 401→login · UTC→IST"]
+    end
+
+    subgraph backend["FastAPI backend — single process"]
+        routes["routes/<br/>upload · recon · reports · product modules · admin"]
+        core["core/ engines<br/>matching · E-Value · BBPS · ingest · auth · maker-checker"]
+        sched["APScheduler (Asia/Kolkata)<br/>watch-folder · auto-recon · EOD digest · subscriptions"]
+        models["models/database.py<br/>43 models · idempotent migrations · startup seeders"]
+    end
+
+    db[("Database<br/>SQLite · MySQL · PostgreSQL")]
+    watch[/"Watch folder<br/>auto-upload"/]
+    smtp{{"SMTP<br/>reports · escalations"}}
+
+    pages --> apijs
+    apijs -->|"HTTP /api"| routes
+    routes --> core
+    core --> models
+    models --> db
+    watch --> sched
+    sched --> core
+    core --> smtp
+    backend -.->|"serves frontend/dist in prod"| client
+```
+
 ```
 frontend/  React 18 + Vite + Tailwind SPA
   src/pages/        one page per workflow (Upload, Open Items, Reports, …)
