@@ -1,0 +1,37 @@
+services:
+  recon:
+    build: .
+    ports:
+      - "8000:8000"
+    # Optional: copy backend/.env.example → backend/.env to set SECRET_KEY,
+    # SMTP, or a MySQL/PostgreSQL DATABASE_URL. Without it the image defaults
+    # to SQLite on the recon-data volume.
+    env_file:
+      - path: backend/.env
+        required: false
+    volumes:
+      - recon-uploads:/app/backend/uploads
+      - recon-data:/app/backend/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional MySQL — uncomment and set DATABASE_URL in backend/.env to
+  # mysql+pymysql://recon:recon@mysql:3306/eko_recon
+  # mysql:
+  #   image: mysql:8
+  #   environment:
+  #     MYSQL_DATABASE: eko_recon
+  #     MYSQL_USER: recon
+  #     MYSQL_PASSWORD: recon
+  #     MYSQL_ROOT_PASSWORD: change-me
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+
+volumes:
+  recon-uploads:
+  recon-data:
+  # mysql-data:

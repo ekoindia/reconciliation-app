@@ -1,0 +1,9 @@
+{
+  "_comment": "Example bank-account seed data. Copy to seed_accounts.json (gitignored) and replace with your real accounts. dmt_bank_accounts feed the DMT account registry; evalue_accounts feed the E-Value account master. IMPORTANT: each reco_acc_no must EXACTLY equal the value that appears in your internal dump's `source` column — E-Value matching joins on it. Accounts can also be managed in the UI under Configuration → Bank Accounts / E-Value Accounts.",
+  "dmt_bank_accounts": [
+    { "partner": "axis", "account_number": "000011112222333", "label": "Axis DMT — A/c …2333", "is_primary": true }
+  ],
+  "evalue_accounts": [
+    { "bank_name": "EXAMPLE BANK", "account_number": "000099998888777", "reco_acc_no": "EXB-8777" }
+  ]
+}

@@ -1,0 +1,24 @@
+# Never bake data, secrets, or local environments into the image
+.git
+.github
+**/.env
+**/.env.*
+!**/.env.example
+backend/uploads/
+backend/*.db
+backend/instance/*
+!backend/instance/*.example.json
+backend/*.sqlite
+backend/.venv/
+backend/venv/
+backend/__pycache__/
+**/__pycache__/
+frontend/node_modules/
+frontend/dist/
+*.docx
+*.xlsx
+*.xls
+*.pdf
+*.tmp
+*.tmp.*
+*.log

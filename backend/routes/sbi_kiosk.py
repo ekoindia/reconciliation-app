@@ -1,0 +1,1112 @@
+import logging
+logger = logging.getLogger("eko_recon")
+
+"""
+routes/sbi_kiosk.py
+
+SBI Kiosk Banking — Full Reconciliation Module (4 Processes)
+
+P01 — SBI Settlement Reconciliation
+   KO Limits Config (KO Withdrawal) ↔ Bank Statement (EKOSETTLEMENT)
+   Match per KO ID; surface CREDITED / PENDING / PARTIAL
+
+P02 — Bank Statement & Transaction Report Reconciliation
+   7 Transaction Report files ↔ Bank Statement
+   Match on 20-digit Reference Number; detect Reversals (same ref, DR+CR)
+
+P03 — CSP-Transaction-Bank Reconciliation
+   CSP Master + Transaction Report (money OUT) ↔ Bank Statement (money IN)
+   CSP Code + Amount with D+1 / D-1 date-shift logic (4-priority)
+
+P04 — CSP Wallet Balance Reconciliation
+   Limit Update Failure Report ↔ KO Cash Holding
+   Identify under/overfunded wallets; track DEPOSIT / WITHDRAWAL actions
+"""
+
+import io
+import re
+import json
+import datetime
+from typing import Optional, List
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+
+from models.database import (
+    get_db, generate_id, AuditLog,
+    SBIBankTransaction, SBITxnReport, SBIKOLimits,
+    SBIKOCashHolding, SBILimitFailure, SBICSPMaster,
+    SBIP01Result, SBIP02Result, SBIP03Result, SBIP04Result,
+)
+from core.auth import get_current_user, require_permission
+
+router = APIRouter(prefix="/api/sbi", tags=["sbi-kiosk"])
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _sf(v, default=0.0) -> float:
+    try:
+        s = str(v).replace(',', '').strip()
+        return float(s) if s and s.lower() not in ('nan', 'none', '') else default
+    except Exception:
+        return default
+
+def _clean(v) -> str:
+    s = str(v).strip() if v is not None else ''
+    return '' if s.lower() in ('nan', 'none') else s
+
+def _nd(v) -> str:
+    """Normalise date string to YYYY-MM-DD."""
+    import re as _re
+    s = _clean(v)
+    if not s: return ''
+    # DD/MM/YYYY or DD-MM-YYYY
+    m = _re.match(r'^(\d{2})[-/](\d{2})[-/](\d{4})', s)
+    if m: return f'{m.group(3)}-{m.group(2)}-{m.group(1)}'
+    # YYYY-MM-DD already
+    if _re.match(r'^\d{4}-\d{2}-\d{2}', s): return s[:10]
+    # DD-Mon-YYYY (e.g. 30-May-2026)
+    try:
+        import dateutil.parser
+        return str(dateutil.parser.parse(s).date())
+    except Exception:
+        return s
+
+def _extract_bank_ref(desc: str) -> str:
+    """Extract 20-digit reference number from bank description."""
+    m = re.search(r'(?:TO|BY)\s+TRANSFER-(\d{20})', desc)
+    return m.group(1) if m else ''
+
+def _extract_ko_id(desc: str) -> str:
+    """Extract KO ID from bank description (after TXN@KO or @KO )."""
+    m = re.search(r'TXN@KO\s*(\w+)[-\s]', desc)
+    if m: return m.group(1)
+    m = re.search(r'@KO\s*(\w+)', desc)
+    return m.group(1) if m else ''
+
+def _extract_settlement_info(desc: str):
+    """
+    For EKOSETTLEMENT rows, extract:
+    - KO ID from: EKO DEDUCTION-{KO_ID}.EKOSETTLEMENT
+    - Deduction date from: EKO DEDUCTION_{DD-MM-YYYY}
+    Returns (ko_id, deduct_date)
+    """
+    ko_m = re.search(r'EKO DEDUCTION-(\w+)\.EKOSETTLEMENT', desc, re.I)
+    dt_m = re.search(r'EKO[_ ]DEDUCTION[_-](\d{2}-\d{2}-\d{4})', desc, re.I)
+    ko_id = ko_m.group(1) if ko_m else ''
+    deduct_date = _nd(dt_m.group(1)) if dt_m else ''
+    return ko_id, deduct_date
+
+def _extract_txn_type_from_bank(desc: str) -> str:
+    """Derive transaction type label from bank description."""
+    desc_u = desc.upper()
+    if 'EKOSETTLEMENT' in desc_u or 'EKO DEDUCTION' in desc_u: return 'Settlement'
+    if 'AEPSOFFUSWDL' in desc_u: return 'AEPS OFFUS Withdrawal'
+    if 'AEPSWDL' in desc_u: return 'AEPS Withdrawal'
+    if 'AEPSDEPOSIT' in desc_u: return 'AEPS Deposit'
+    if 'MONEYTRF' in desc_u: return 'Money Transfer'
+    if 'WITHDRAWAL' in desc_u: return 'Withdrawal'
+    if 'LOAN' in desc_u: return 'Loan'
+    if 'RUPAYWDL' in desc_u: return 'Rupay Withdrawal'
+    if 'INITIAL' in desc_u: return 'Initial Deposit'
+    return 'Other'
+
+def _audit(db: Session, user, action: str, detail: dict, action_type: str = "human"):
+    # SBI uploads + P01–P04 runs are deliberate admin actions → "human" (not "app").
+    try:
+        db.add(AuditLog(
+            user_id=user.id, username=user.username,
+            action=action, entity_type="sbi_kiosk", entity_id=None,
+            action_type=action_type,
+            detail=json.dumps(detail),
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+# ── P01: Bank Statement Upload ────────────────────────────────────────────────
+
+@router.post("/upload/bank-statement")
+async def upload_bank_statement(
+    file: UploadFile = File(...),
+    recon_date: str = "",
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """
+    Upload SBI Bank Statement (settlement account, tab-separated .xls).
+    Parses all transactions; auto-detects settlement rows via EKOSETTLEMENT keyword.
+    Extracts KO ID and deduction date from settlement description.
+    """
+    content = (await file.read()).decode('utf-8', errors='replace')
+    lines = content.splitlines()
+
+    # Find header row
+    header_idx = next((i for i, l in enumerate(lines) if 'Txn Date' in l and 'Description' in l), None)
+    if header_idx is None:
+        raise HTTPException(status_code=400, detail="Cannot find bank statement header row. Expected 'Txn Date' column.")
+
+    inserted = 0
+    errors = []
+    today = str(datetime.date.today())
+
+    for line in lines[header_idx + 1:]:
+        parts = line.strip().split('\t')
+        if len(parts) < 6: continue
+        try:
+            txn_date   = _nd(parts[0].strip()) if parts else ''
+            value_date = _nd(parts[1].strip()) if len(parts) > 1 else ''
+            desc       = parts[2].strip() if len(parts) > 2 else ''
+            ref_no     = parts[3].strip() if len(parts) > 3 else ''
+            branch     = parts[4].strip() if len(parts) > 4 else ''
+            debit      = _sf(parts[5].strip()) if len(parts) > 5 else 0.0
+            credit     = _sf(parts[6].strip()) if len(parts) > 6 else 0.0
+            balance    = _sf(parts[7].strip()) if len(parts) > 7 else None
+
+            if not txn_date and not desc: continue
+
+            is_settlement = bool(re.search(r'EKOSETTLEMENT|EKO.DEDUCTION', desc, re.I))
+            ko_id_extracted, deduct_date = ('', '')
+            if is_settlement:
+                ko_id_extracted, deduct_date = _extract_settlement_info(desc)
+            else:
+                ko_id_extracted = _extract_ko_id(desc)
+
+            ref_extracted = _extract_bank_ref(desc)
+
+            db.add(SBIBankTransaction(
+                id            = generate_id(),
+                upload_date   = today,
+                txn_date      = txn_date,
+                value_date    = value_date,
+                description   = desc,
+                ref_number    = ref_extracted or ref_no,
+                branch_code   = branch,
+                debit         = debit,
+                credit        = credit,
+                balance       = balance,
+                ko_id         = ko_id_extracted,
+                deduct_date   = deduct_date,
+                is_settlement = is_settlement,
+                txn_type      = _extract_txn_type_from_bank(desc),
+            ))
+            inserted += 1
+        except Exception as e:
+            errors.append(f"Line error: {e}")
+
+    db.commit()
+
+    # M10: validate that we parsed a meaningful number of rows
+    # SBI bank statements for a full day typically have hundreds of rows.
+    # If inserted < 10, it likely means the file format changed or header detection failed.
+    validation_warning = None
+    if inserted < 10:
+        validation_warning = (
+            f"Only {inserted} rows were parsed. The file may have a different format "
+            f"than expected. Verify the file is a valid SBI bank statement "
+            f"(tab-separated with 'Txn Date' header row)."
+        )
+        logger.warning(f"SBI bank statement: low row count ({inserted}) for {file.filename}")
+
+    _audit(db, current_user, "sbi_upload_bank_statement",
+           {"filename": file.filename, "inserted": inserted, "warning": validation_warning})
+    settlement_count = db.query(SBIBankTransaction).filter(
+        SBIBankTransaction.upload_date == today,
+        SBIBankTransaction.is_settlement == True
+    ).count()
+    return {
+        "inserted": inserted,
+        "settlement_rows": settlement_count,
+        "errors": errors[:10],
+        "filename": file.filename,
+        "validation_warning": validation_warning,
+    }
+
+
+# ── P01: KO Limits Config Upload ──────────────────────────────────────────────
+
+@router.post("/upload/ko-limits")
+async def upload_ko_limits(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """
+    Upload KO Limits Configuration Report (real Excel, 3 metadata rows then header).
+    Records every KO Deposit and KO Withdrawal.
+    """
+    content = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(content), engine='xlrd', header=None)
+    except Exception:
+        try:
+            df = pd.read_excel(io.BytesIO(content), header=None)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Cannot parse file: {e}")
+
+    # Header is row 3 (0-indexed)
+    h = [_clean(c) for c in df.iloc[3].tolist()]
+    data = df.iloc[4:].copy()
+    data.columns = h
+    today = str(datetime.date.today())
+    inserted = 0
+
+    for _, row in data.iterrows():
+        txn_type = _clean(row.get('Type of Transaction', ''))
+        if txn_type not in ('KO Deposit', 'KO Withdrawal'): continue
+        try:
+            raw_dt = _clean(row.get('Date of Transaction', ''))
+            db.add(SBIKOLimits(
+                id                  = generate_id(),
+                upload_date         = today,
+                txn_datetime        = raw_dt,
+                txn_date            = _nd(raw_dt[:10] if raw_dt else ''),
+                limit_configured_by = _clean(row.get('Limit Configured By', '')),
+                ko_id               = _clean(row.get('KO ID', '')),
+                opening_limit       = _sf(row.get('Opening Limit')),
+                txn_type            = txn_type,
+                amount              = _sf(row.get('Amount')),
+                closing_limit       = _sf(row.get('Closing Limit')),
+            ))
+            inserted += 1
+        except Exception as _e:
+            logger.warning(f"routes/sbi_kiosk.py: {_e}")  # db.commit()
+    _audit(db, current_user, "sbi_upload_ko_limits", {"filename": file.filename, "inserted": inserted})
+    return {"inserted": inserted, "filename": file.filename}
+
+
+# ── P02: Transaction Report Upload ────────────────────────────────────────────
+
+@router.post("/upload/txn-report")
+async def upload_txn_report(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """
+    Upload one of the 7 BC Transaction Report files.
+    All files share the same column structure (3 metadata rows + header row 4).
+    'Other Txn' file has extra REVERSAL_STATUS, SETTELMENT_ACCOUNT_, KO HOLDING columns.
+    """
+    content = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(content), engine='xlrd', header=None)
+    except Exception:
+        try:
+            df = pd.read_excel(io.BytesIO(content), header=None)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Cannot parse file: {e}")
+
+    # Header is row 3
+    raw_h = df.iloc[3].tolist()
+    h = [_clean(c) for c in raw_h]
+    data = df.iloc[4:].copy()
+    data.columns = h
+
+    # Normalize column names (some files have empty cols mixed in)
+    col_map = {c.lower().replace(' ', '_').replace('/', '_'): c for c in h if c}
+    def gc(key): return col_map.get(key, '')
+    def gv(row, key): return _clean(row.get(gc(key), '')) if gc(key) else ''
+
+    today = str(datetime.date.today())
+    source = file.filename
+    inserted = 0
+
+    for _, row in data.iterrows():
+        # Skip metadata/empty rows
+        sr = gv(row, 'sr._no') or gv(row, 'sr._no.')
+        if not sr or not str(sr).replace('.', '').strip().isdigit(): continue
+
+        raw_dt = gv(row, 'transaction_date_&_time') or gv(row, 'transaction_date')
+        txn_date = _nd(raw_dt[:10]) if raw_dt else ''
+
+        try:
+            db.add(SBITxnReport(
+                id              = generate_id(),
+                upload_date     = today,
+                source_file     = source,
+                ko_id           = gv(row, 'ko_id'),
+                txn_datetime    = raw_dt,
+                txn_date        = txn_date,
+                reference_number= gv(row, 'reference_number'),
+                txn_type        = gv(row, 'type_of_transaction'),
+                from_account    = gv(row, 'from_account'),
+                to_account      = gv(row, 'to_account'),
+                amount          = _sf(row.get(gc('amount'), 0)),
+                customer_charge = _sf(row.get(gc('customer_charge'), 0)),
+                journal_number  = gv(row, 'journal_number'),
+                status          = gv(row, 'status'),
+                reversal_status = gv(row, 'reversal_status'),
+                settlement_acct = gv(row, 'settelment_account_'),
+                ko_holding      = _sf(row.get(gc('ko_holding'), None)),
+            ))
+            inserted += 1
+        except Exception as _e:
+            logger.warning(f"routes/sbi_kiosk.py: {_e}")  # db.commit()
+    _audit(db, current_user, "sbi_upload_txn_report", {"filename": source, "inserted": inserted})
+    return {"inserted": inserted, "filename": source}
+
+
+# ── P03: CSP Master Sheet Upload ──────────────────────────────────────────────
+
+@router.post("/upload/csp-master")
+async def upload_csp_master(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """
+    Upload CSP Master Sheet (CSP Code | Ref Number | Mode).
+    Cash: fixed ref per CSP (same ref across multiple deposits).
+    Electronic/CDM: each row is a unique transaction reference.
+    """
+    content = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(content), header=None)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot parse: {e}")
+
+    # Header in row 0
+    h = [_clean(c) for c in df.iloc[0].tolist()]
+    data = df.iloc[1:].copy()
+    data.columns = h
+    today = str(datetime.date.today())
+    inserted = 0
+
+    for _, row in data.iterrows():
+        csp = _clean(row.get('CSP Code', ''))
+        if not csp: continue
+        db.add(SBICSPMaster(
+            id          = generate_id(),
+            upload_date = today,
+            csp_code    = csp,
+            ref_number  = _clean(row.get('Ref.. Number', '') or row.get('Ref Number', '')),
+            mode        = _clean(row.get('Mood', '') or row.get('Mode', '')),
+        ))
+        inserted += 1
+
+    db.commit()
+    _audit(db, current_user, "sbi_upload_csp_master", {"filename": file.filename, "inserted": inserted})
+    return {"inserted": inserted, "filename": file.filename}
+
+
+# ── P04: KO Cash Holding Upload ───────────────────────────────────────────────
+
+@router.post("/upload/ko-cash-holding")
+async def upload_ko_cash_holding(
+    file: UploadFile = File(...),
+    report_date: str = "",
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """Upload KO Cash Holding Report (KO ID + opening/closing balances)."""
+    content = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(content), engine='xlrd', header=None)
+    except Exception:
+        df = pd.read_excel(io.BytesIO(content), header=None)
+
+    h = [_clean(c) for c in df.iloc[3].tolist()]
+    data = df.iloc[4:].copy()
+    data.columns = h
+    today = str(datetime.date.today())
+    r_date = _nd(report_date) if report_date else today
+    inserted = 0
+
+    for _, row in data.iterrows():
+        ko = _clean(row.get('KO ID', ''))
+        if not ko: continue
+        db.add(SBIKOCashHolding(
+            id              = generate_id(),
+            upload_date     = today,
+            report_date     = r_date,
+            ko_id           = ko,
+            limit           = _sf(row.get('Limit')),
+            opening_balance = _sf(row.get('Opening Balance')),
+            cash_receipts   = _sf(row.get('Cash Receipts')),
+            cash_payments   = _sf(row.get('Cash Payments')),
+            ko_deposit      = _sf(row.get('KO Deposit')),
+            ko_withdrawal   = _sf(row.get('KO Withdrawal')),
+            closing_balance = _sf(row.get('Closing Balance')),
+        ))
+        inserted += 1
+
+    db.commit()
+    _audit(db, current_user, "sbi_upload_ko_cash_holding", {"filename": file.filename, "inserted": inserted})
+    return {"inserted": inserted, "filename": file.filename}
+
+
+@router.post("/upload/limit-failures")
+async def upload_limit_failures(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """Upload Limit Update Failure Report (CSPs whose wallet limit update failed)."""
+    content = await file.read()
+    try:
+        import xlrd
+        book = xlrd.open_workbook(file_contents=content)
+        sh = book.sheet_by_index(0)
+        rows = [[str(sh.cell_value(r, c)).strip() for c in range(sh.ncols)] for r in range(sh.nrows)]
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Cannot parse Limit Fail file: {e}")
+
+    # Header is row 3 (0-indexed)
+    if len(rows) < 4:
+        raise HTTPException(status_code=400, detail="File has too few rows")
+
+    today = str(datetime.date.today())
+    inserted = 0
+
+    for row in rows[4:]:  # data starts at row 4
+        if len(row) < 5: continue
+        sr = row[0].replace('.', '').strip()
+        if not sr or not sr.isdigit(): continue
+        try:
+            db.add(SBILimitFailure(
+                id          = generate_id(),
+                upload_date = today,
+                txn_date    = _nd(row[1]),
+                csp_code    = row[2].strip(),
+                bc_id       = row[3].strip(),
+                amount      = _sf(row[4]),
+                user        = row[5].strip() if len(row) > 5 else '',
+            ))
+            inserted += 1
+        except Exception as _e:
+            logger.warning(f"routes/sbi_kiosk.py: {_e}")  # db.commit()
+    _audit(db, current_user, "sbi_upload_limit_failures", {"filename": file.filename, "inserted": inserted})
+    return {"inserted": inserted, "filename": file.filename}
+
+
+# ── P01: Run Settlement Reconciliation ────────────────────────────────────────
+
+@router.post("/run/p01")
+def run_p01(
+    recon_date: str,
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("run_recon")),
+):
+    """
+    P01 — SBI Settlement Reconciliation.
+    Compares KO wallet withdrawals (KO Limits Config) against
+    bank settlement credits (EKOSETTLEMENT rows in bank statement).
+    Match key: KO ID. Handles D+1 via deduction_date field.
+    Statuses: CREDITED | PENDING | PARTIAL | EXCESS
+    """
+    today = upload_date or str(datetime.date.today())
+
+    # Clear old P01 results for this recon_date
+    db.query(SBIP01Result).filter(SBIP01Result.recon_date == recon_date).delete()
+    db.commit()
+
+    # Load KO Limits — KO Withdrawals (money leaving CSP wallet = settlement request)
+    ko_wdl_q = db.query(SBIKOLimits).filter(
+        SBIKOLimits.txn_type == 'KO Withdrawal',
+        SBIKOLimits.upload_date == today,
+    )
+    ko_withdrawals = {}  # ko_id → total amount withdrawn
+    ko_dates = {}        # ko_id → txn_date
+    for r in ko_wdl_q.all():
+        ko_withdrawals[r.ko_id] = ko_withdrawals.get(r.ko_id, 0) + (r.amount or 0)
+        ko_dates[r.ko_id] = r.txn_date
+
+    # Load bank settlement transactions (EKOSETTLEMENT filter)
+    # Include D+1: deductions from yesterday may appear in today's bank statement
+    bank_settle_q = db.query(SBIBankTransaction).filter(
+        SBIBankTransaction.is_settlement == True,
+        SBIBankTransaction.upload_date == today,
+    )
+    bank_by_ko = {}      # ko_id → total bank settlement debit
+    bank_dates = {}      # ko_id → bank txn_date
+    bank_deduct = {}     # ko_id → wallet deduct_date (from description)
+    for r in bank_settle_q.all():
+        ko = r.ko_id
+        if not ko: continue
+        bank_by_ko[ko] = bank_by_ko.get(ko, 0) + (r.debit or 0)
+        bank_dates[ko] = r.txn_date
+        bank_deduct[ko] = r.deduct_date
+
+    # All KOs that appear in either source
+    all_kos = set(ko_withdrawals.keys()) | set(bank_by_ko.keys())
+    results = []
+
+    for ko in all_kos:
+        wallet_amt = ko_withdrawals.get(ko, 0)
+        bank_amt   = bank_by_ko.get(ko, 0)
+        diff       = bank_amt - wallet_amt
+
+        if wallet_amt == 0 and bank_amt > 0:
+            status = 'EXCESS'          # bank credit with no wallet withdrawal (manual/error)
+        elif wallet_amt > 0 and bank_amt == 0:
+            status = 'PENDING'         # wallet withdrawn but no bank credit yet
+        elif abs(diff) < 0.01:
+            status = 'CREDITED'        # perfect match
+        else:
+            status = 'PARTIAL'         # amounts differ
+
+        result = SBIP01Result(
+            id              = generate_id(),
+            recon_date      = recon_date,
+            ko_id           = ko,
+            wallet_withdrawn= wallet_amt,
+            bank_settled    = bank_amt,
+            difference      = round(diff, 2),
+            status          = status,
+            deduct_date     = bank_deduct.get(ko, ''),
+            bank_txn_date   = bank_dates.get(ko, ''),
+            notes           = (
+                f"D+1 settlement (wallet deducted {bank_deduct.get(ko, '')}, settled {bank_dates.get(ko, '')})"
+                if bank_deduct.get(ko) and bank_deduct.get(ko) != bank_dates.get(ko) else ''
+            ),
+        )
+        db.add(result)
+        results.append(result)
+
+    db.commit()
+    summary = {s: sum(1 for r in results if r.status == s) for s in ('CREDITED', 'PENDING', 'PARTIAL', 'EXCESS')}
+    _audit(db, current_user, "sbi_run_p01", {"recon_date": recon_date, **summary})
+    return {"recon_date": recon_date, "total_kos": len(results), "summary": summary}
+
+
+# ── P02: Run Bank + Transaction Report Reconciliation ─────────────────────────
+
+@router.post("/run/p02")
+def run_p02(
+    recon_date: str,
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("run_recon")),
+):
+    """
+    P02 — Bank Statement & Transaction Report Reconciliation.
+    Primary match: Reference Number (20-digit, extracted from bank description).
+    Reversal: same ref appears as both DR and CR → tagged as Reversal Debit / Credit.
+    Statuses: Matched / Unmatched / Partial / Reversal
+    """
+    today = upload_date or str(datetime.date.today())
+    db.query(SBIP02Result).filter(SBIP02Result.recon_date == recon_date).delete()
+    db.commit()
+
+    # Build reference number index from all Transaction Reports
+    txn_by_ref = {}  # ref → list of SBITxnReport rows
+    for r in db.query(SBITxnReport).filter(SBITxnReport.upload_date == today).all():
+        if r.reference_number:
+            txn_by_ref.setdefault(r.reference_number, []).append(r)
+
+    # Load all bank transactions
+    bank_txns = db.query(SBIBankTransaction).filter(
+        SBIBankTransaction.upload_date == today
+    ).all()
+
+    # First pass: detect reversals (same ref, DR + CR pair)
+    ref_bank_map = {}  # ref → list of (bank_txn, type)
+    for bt in bank_txns:
+        if not bt.ref_number: continue
+        ref_bank_map.setdefault(bt.ref_number, []).append(bt)
+
+    reversal_refs = {
+        ref for ref, txns in ref_bank_map.items()
+        if any(t.debit > 0 for t in txns) and any(t.credit > 0 for t in txns)
+    }
+
+    results = []
+    used_txn_ids = set()
+
+    for bt in bank_txns:
+        ref = bt.ref_number
+        bank_type = 'DR' if bt.debit > 0 else 'CR'
+        bank_amount = bt.debit if bt.debit > 0 else bt.credit
+
+        # Reversal detection
+        is_reversal = ref in reversal_refs
+        reversal_type = ''
+        if is_reversal:
+            reversal_type = 'Reversal Debit' if bank_type == 'DR' else 'Reversal Credit'
+
+        # Match against transaction reports
+        matched_txn = None
+        if ref and ref in txn_by_ref:
+            for txn in txn_by_ref[ref]:
+                if txn.id not in used_txn_ids:
+                    matched_txn = txn
+                    used_txn_ids.add(txn.id)
+                    break
+
+        if is_reversal:
+            match_status = 'Reversal'
+            success = 'Success' if matched_txn else 'Fail'
+        elif matched_txn:
+            # Validate amount
+            amt_diff = abs(bank_amount - (matched_txn.amount or 0))
+            match_status = 'Matched' if amt_diff < 1.0 else 'Partial'
+            success = matched_txn.status or 'Success'
+        elif not ref:
+            match_status = 'Unmatched'
+            success = 'Fail'
+        else:
+            match_status = 'Unmatched'
+            success = 'Fail'
+
+        result = SBIP02Result(
+            id               = generate_id(),
+            recon_date       = recon_date,
+            bank_txn_id      = bt.id,
+            txn_report_id    = matched_txn.id if matched_txn else None,
+            reference_number = ref,
+            ko_id            = bt.ko_id or (matched_txn.ko_id if matched_txn else ''),
+            bank_amount      = bank_amount,
+            bank_type        = bank_type,
+            report_amount    = matched_txn.amount if matched_txn else None,
+            report_txn_type  = matched_txn.txn_type if matched_txn else '',
+            match_status     = match_status,
+            reversal_type    = reversal_type,
+            success_status   = success,
+            notes            = bt.txn_type,
+        )
+        db.add(result)
+        results.append(result)
+
+    db.commit()
+    summary = {s: sum(1 for r in results if r.match_status == s)
+               for s in ('Matched', 'Unmatched', 'Partial', 'Reversal')}
+    _audit(db, current_user, "sbi_run_p02", {"recon_date": recon_date, **summary})
+    return {"recon_date": recon_date, "total": len(results), "summary": summary}
+
+
+# ── P03: Run CSP-Transaction-Bank Reconciliation ──────────────────────────────
+
+@router.post("/run/p03")
+def run_p03(
+    recon_date: str,
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("run_recon")),
+):
+    """
+    P03 — CSP-Transaction-Bank Reconciliation.
+    Money OUT (Transaction Report debits to CSP) ↔ Money IN (Bank credits from CSP).
+    Match key: CSP Code + Amount.
+    4-priority date logic (SOP Section 4):
+      P1: same-day | P2: D+1 bank→txn | P3: D+1 txn→bank | P4: D-1 txn→bank
+    One-to-one matching (no duplicate assignment).
+    """
+    today = upload_date or str(datetime.date.today())
+    db.query(SBIP03Result).filter(SBIP03Result.recon_date == recon_date).delete()
+    db.commit()
+
+    # Load CSP Master for mode lookup
+    csp_modes = {}
+    for r in db.query(SBICSPMaster).filter(SBICSPMaster.upload_date == today).all():
+        if r.csp_code not in csp_modes:
+            csp_modes[r.csp_code] = r.mode
+
+    # Load Transaction Report (money paid OUT to CSP = debits from settlement account)
+    txn_rows = []
+    for r in db.query(SBITxnReport).filter(SBITxnReport.upload_date == today).all():
+        if r.status and r.status.lower() == 'success' and r.amount and r.amount > 0:
+            txn_rows.append(r)
+
+    # Load Bank Statement credits (money received FROM CSP)
+    bank_credits = []
+    for r in db.query(SBIBankTransaction).filter(
+        SBIBankTransaction.upload_date == today,
+        SBIBankTransaction.credit > 0,
+        SBIBankTransaction.is_settlement == False,
+    ).all():
+        bank_credits.append(r)
+
+    # Build bank lookup: (ko_id, amount, date) → bank row
+    # Date offsets checked: 0, +1, -1
+    bank_by_ko_amt = {}
+    for b in bank_credits:
+        key = (b.ko_id, round(b.credit, 2))
+        bank_by_ko_amt.setdefault(key, []).append(b)
+
+    results = []
+    used_bank_ids = set()
+
+    def _find_bank(ko_id, amount, txn_date_str, max_shift=1):
+        """Find best matching bank credit by KO ID + Amount with date shifting."""
+        key = (ko_id, round(amount, 2))
+        candidates = bank_by_ko_amt.get(key, [])
+        # Sort candidates by date proximity
+        best = None
+        best_shift = 999
+        for b in candidates:
+            if b.id in used_bank_ids: continue
+            try:
+                from datetime import date
+                t = date.fromisoformat(txn_date_str) if txn_date_str else None
+                bd = date.fromisoformat(b.txn_date) if b.txn_date else None
+                if t and bd:
+                    shift = (bd - t).days
+                    if abs(shift) <= max_shift and abs(shift) < abs(best_shift):
+                        best = b
+                        best_shift = shift
+            except Exception:
+                if best is None:
+                    best = b
+                    best_shift = 0
+        return best, best_shift if best else 999
+
+    # Match each transaction report row against bank credits
+    for txn in txn_rows:
+        ko = txn.ko_id
+        amt = txn.amount or 0
+        mode = csp_modes.get(ko, 'Unknown')
+
+        bank_match, shift = _find_bank(ko, amt, txn.txn_date, max_shift=2)
+
+        if bank_match:
+            used_bank_ids.add(bank_match.id)
+            if shift == 0: priority = 1
+            elif shift == 1: priority = 2   # D+1 bank
+            elif shift == -1: priority = 4   # D-1 bank
+            else: priority = 3
+
+            result = SBIP03Result(
+                id              = generate_id(),
+                recon_date      = recon_date,
+                csp_code        = ko,
+                mode            = mode,
+                ref_number      = txn.reference_number,
+                txn_amount      = amt,
+                txn_date        = txn.txn_date,
+                bank_credit_date= bank_match.txn_date,
+                bank_amount     = bank_match.credit,
+                match_status    = 'Matched',
+                date_shift      = shift,
+                match_priority  = priority,
+                notes           = f"Shift {shift:+d}d" if shift != 0 else '',
+            )
+        else:
+            result = SBIP03Result(
+                id              = generate_id(),
+                recon_date      = recon_date,
+                csp_code        = ko,
+                mode            = mode,
+                ref_number      = txn.reference_number,
+                txn_amount      = amt,
+                txn_date        = txn.txn_date,
+                bank_credit_date= None,
+                bank_amount     = None,
+                match_status    = 'Unmatched_TxnReport',
+                date_shift      = None,
+                match_priority  = None,
+                notes           = 'No matching bank credit found (checked ±2 days)',
+            )
+
+        db.add(result)
+        results.append(result)
+
+    # Unmatched bank credits
+    for b in bank_credits:
+        if b.id not in used_bank_ids:
+            mode = csp_modes.get(b.ko_id, 'Unknown')
+            result = SBIP03Result(
+                id              = generate_id(),
+                recon_date      = recon_date,
+                csp_code        = b.ko_id,
+                mode            = mode,
+                ref_number      = b.ref_number,
+                txn_amount      = None,
+                txn_date        = None,
+                bank_credit_date= b.txn_date,
+                bank_amount     = b.credit,
+                match_status    = 'Unmatched_Bank',
+                date_shift      = None,
+                match_priority  = None,
+                notes           = 'Bank credit with no matching transaction report entry',
+            )
+            db.add(result)
+            results.append(result)
+
+    db.commit()
+    summary = {s: sum(1 for r in results if r.match_status == s)
+               for s in ('Matched', 'Unmatched_TxnReport', 'Unmatched_Bank')}
+    _audit(db, current_user, "sbi_run_p03", {"recon_date": recon_date, **summary})
+    return {"recon_date": recon_date, "total": len(results), "summary": summary}
+
+
+# ── P04: Run Wallet Balance Reconciliation ────────────────────────────────────
+
+@router.post("/run/p04")
+def run_p04(
+    recon_date: str,
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("run_recon")),
+):
+    """
+    P04 — CSP Wallet Balance Reconciliation.
+    For each KO in the Limit Update Failure Report:
+      - Find their Closing Balance in KO Cash Holding Report
+      - Determine whether wallet needs DEPOSIT or WITHDRAWAL correction
+    Action is flagged; team marks done after performing action in SBI portal.
+    """
+    today = upload_date or str(datetime.date.today())
+    db.query(SBIP04Result).filter(SBIP04Result.recon_date == recon_date).delete()
+    db.commit()
+
+    # Load KO Cash Holding closing balances
+    cash_holding = {}
+    for r in db.query(SBIKOCashHolding).filter(SBIKOCashHolding.upload_date == today).all():
+        cash_holding[r.ko_id] = r.closing_balance or 0
+
+    # Load Limit Failures
+    failures = db.query(SBILimitFailure).filter(
+        SBILimitFailure.upload_date == today
+    ).all()
+
+    results = []
+    for f in failures:
+        closing = cash_holding.get(f.csp_code, 0)
+        failed_amt = f.amount or 0  # negative = withdrawal attempt, positive = deposit attempt
+
+        # Expected balance after the failed operation would have succeeded
+        expected = closing + failed_amt   # if withdrawal failed, wallet has MORE than expected
+
+        diff = closing - expected         # actual vs expected
+        abs_diff = abs(diff)
+
+        if abs_diff < 0.01:
+            action = 'NONE'
+            action_amt = 0.0
+        elif diff > 0:
+            # Wallet has MORE than expected → withdrawal needed
+            action = 'WITHDRAWAL'
+            action_amt = diff
+        else:
+            # Wallet has LESS than expected → deposit needed
+            action = 'DEPOSIT'
+            action_amt = abs_diff
+
+        result = SBIP04Result(
+            id              = generate_id(),
+            recon_date      = recon_date,
+            csp_code        = f.csp_code,
+            failed_amount   = failed_amt,
+            closing_balance = closing,
+            expected_balance= expected,
+            difference      = round(diff, 2),
+            action_required = action,
+            action_amount   = round(action_amt, 2),
+            action_done     = False,
+            notes           = f"Limit update failed on {f.txn_date}: {failed_amt:,.0f}. "
+                              f"Current balance: {closing:,.0f}, Expected: {expected:,.0f}",
+        )
+        db.add(result)
+        results.append(result)
+
+    db.commit()
+    summary = {a: sum(1 for r in results if r.action_required == a)
+               for a in ('DEPOSIT', 'WITHDRAWAL', 'NONE')}
+    _audit(db, current_user, "sbi_run_p04", {"recon_date": recon_date, **summary})
+    return {"recon_date": recon_date, "total": len(results), "summary": summary}
+
+
+# ── P04: Mark action done ─────────────────────────────────────────────────────
+
+@router.patch("/p04/{result_id}/done")
+def mark_p04_done(
+    result_id: str,
+    done: bool = True,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """Mark a P04 wallet adjustment as completed (after team acts in SBI portal)."""
+    r = db.query(SBIP04Result).filter(SBIP04Result.id == result_id).first()
+    if not r: raise HTTPException(status_code=404, detail="Result not found")
+    r.action_done = done
+    db.commit()
+    return {"message": "Updated"}
+
+
+# ── Query Endpoints ───────────────────────────────────────────────────────────
+
+@router.get("/p01/results")
+def get_p01_results(
+    recon_date: Optional[str] = None,
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = db.query(SBIP01Result)
+    if recon_date: q = q.filter(SBIP01Result.recon_date == recon_date)
+    if status: q = q.filter(SBIP01Result.status == status)
+    rows = q.order_by(SBIP01Result.ko_id).all()
+    grand = {"wallet_withdrawn": 0.0, "bank_settled": 0.0, "difference": 0.0}
+    data = []
+    for r in rows:
+        grand["wallet_withdrawn"] += r.wallet_withdrawn or 0
+        grand["bank_settled"]     += r.bank_settled or 0
+        grand["difference"]       += r.difference or 0
+        data.append({k: getattr(r, k) for k in ('id','ko_id','wallet_withdrawn','bank_settled','difference','status','deduct_date','bank_txn_date','notes','recon_date')})
+    return {"rows": data, "grand": {k: round(v, 2) for k, v in grand.items()}, "count": len(data)}
+
+
+@router.get("/p02/results")
+def get_p02_results(
+    recon_date: Optional[str] = None,
+    match_status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = db.query(SBIP02Result)
+    if recon_date:   q = q.filter(SBIP02Result.recon_date == recon_date)
+    if match_status: q = q.filter(SBIP02Result.match_status == match_status)
+    total = q.count()
+    # Summary from full set (cheap COUNT aggregation)
+    from sqlalchemy import func as sqlfunc
+    summary_q = db.query(SBIP02Result.match_status, sqlfunc.count(SBIP02Result.id))
+    if recon_date: summary_q = summary_q.filter(SBIP02Result.recon_date == recon_date)
+    summary = {s: c for s, c in summary_q.group_by(SBIP02Result.match_status).all()}
+    rows = q.order_by(SBIP02Result.reference_number).offset((page-1)*page_size).limit(page_size).all()
+    data = [{k: getattr(r, k) for k in ('id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')} for r in rows]
+    return {"rows": data, "summary": summary, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/p03/results")
+def get_p03_results(
+    recon_date: Optional[str] = None,
+    match_status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 100,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = db.query(SBIP03Result)
+    if recon_date:   q = q.filter(SBIP03Result.recon_date == recon_date)
+    if match_status: q = q.filter(SBIP03Result.match_status == match_status)
+    total = q.count()
+    from sqlalchemy import func as sqlfunc
+    summary_q = db.query(SBIP03Result.match_status, sqlfunc.count(SBIP03Result.id))
+    if recon_date: summary_q = summary_q.filter(SBIP03Result.recon_date == recon_date)
+    summary = {s: c for s, c in summary_q.group_by(SBIP03Result.match_status).all()}
+    rows = q.order_by(SBIP03Result.csp_code).offset((page-1)*page_size).limit(page_size).all()
+    data = [{k: getattr(r, k) for k in ('id','csp_code','mode','ref_number','txn_amount','txn_date','bank_credit_date','bank_amount','match_status','date_shift','match_priority','notes','recon_date')} for r in rows]
+    return {"rows": data, "summary": summary, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/p04/results")
+def get_p04_results(
+    recon_date: Optional[str] = None,
+    action_required: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = db.query(SBIP04Result)
+    if recon_date:      q = q.filter(SBIP04Result.recon_date == recon_date)
+    if action_required: q = q.filter(SBIP04Result.action_required == action_required)
+    rows = q.order_by(SBIP04Result.csp_code).all()
+    summary = {}
+    for r in rows:
+        summary[r.action_required] = summary.get(r.action_required, 0) + 1
+    data = [{k: getattr(r, k) for k in ('id','csp_code','failed_amount','closing_balance','expected_balance','difference','action_required','action_amount','action_done','notes','recon_date')} for r in rows]
+    return {"rows": data, "summary": summary, "count": len(data)}
+
+
+@router.get("/summary")
+def get_summary(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Dashboard roll-up for SBI Kiosk. Data-presence counts + an overall recon
+    health rate across the four processes (P01 settlement, P02 bank↔txn,
+    P03 CSP↔txn↔bank, P04 wallet balance). Date-range aware on the result tables."""
+    from sqlalchemy import func as _f
+    GOOD = {"credited", "matched", "reconciled", "ok", "none", "no_action",
+            "balanced", "success", "settled", "no action"}
+
+    counts = {
+        "bank_statement":  db.query(SBIBankTransaction).count(),
+        "txn_reports":     db.query(SBITxnReport).count(),
+        "ko_limits":       db.query(SBIKOLimits).count(),
+        "ko_cash_holding": db.query(SBIKOCashHolding).count(),
+        "limit_failures":  db.query(SBILimitFailure).count(),
+        "csp_master":      db.query(SBICSPMaster).count(),
+    }
+
+    def _proc(model, status_col):
+        q = db.query(status_col, _f.count())
+        if date_from: q = q.filter(model.recon_date >= date_from)
+        if date_to:   q = q.filter(model.recon_date <= date_to)
+        by = {(s or "").strip().lower(): c for s, c in q.group_by(status_col).all()}
+        total   = sum(by.values())
+        matched = sum(c for s, c in by.items() if s in GOOD)
+        return {"total": total, "matched": matched,
+                "exceptions": total - matched, "by_status": by}
+
+    p01 = _proc(SBIP01Result, SBIP01Result.status)
+    p02 = _proc(SBIP02Result, SBIP02Result.match_status)
+    p03 = _proc(SBIP03Result, SBIP03Result.match_status)
+    p04 = _proc(SBIP04Result, SBIP04Result.action_required)
+
+    tot     = p01["total"] + p02["total"] + p03["total"] + p04["total"]
+    matched = p01["matched"] + p02["matched"] + p03["matched"] + p04["matched"]
+    return {
+        "counts":      counts,
+        "has_data":    any(counts.values()),
+        "processes":   {"p01": p01, "p02": p02, "p03": p03, "p04": p04},
+        "total":       tot,
+        "matched":     matched,
+        "exceptions":  tot - matched,
+        "match_rate":  round(matched / tot * 100, 1) if tot else None,
+    }
+
+
+@router.get("/upload-status")
+def get_upload_status(
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Show count of uploaded records per data type for the given date."""
+    today = upload_date or str(datetime.date.today())
+    return {
+        "upload_date": today,
+        "bank_statement":  db.query(SBIBankTransaction).filter(SBIBankTransaction.upload_date == today).count(),
+        "txn_reports":     db.query(SBITxnReport).filter(SBITxnReport.upload_date == today).count(),
+        "ko_limits":       db.query(SBIKOLimits).filter(SBIKOLimits.upload_date == today).count(),
+        "ko_cash_holding": db.query(SBIKOCashHolding).filter(SBIKOCashHolding.upload_date == today).count(),
+        "limit_failures":  db.query(SBILimitFailure).filter(SBILimitFailure.upload_date == today).count(),
+        "csp_master":      db.query(SBICSPMaster).filter(SBICSPMaster.upload_date == today).count(),
+    }
+
+
+@router.delete("/clear")
+def clear_sbi_data(
+    table: Optional[str] = Query(None, description="bank|txn|limits|cash|failures|csp|p01|p02|p03|p04|all"),
+    upload_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("upload")),
+):
+    """Clear SBI data (all tables or specific table, optionally by upload_date)."""
+    tables = {
+        "bank": SBIBankTransaction, "txn": SBITxnReport,
+        "limits": SBIKOLimits, "cash": SBIKOCashHolding,
+        "failures": SBILimitFailure, "csp": SBICSPMaster,
+        "p01": SBIP01Result, "p02": SBIP02Result,
+        "p03": SBIP03Result, "p04": SBIP04Result,
+    }
+    to_clear = tables if table in (None, "all") else {table: tables[table]} if table in tables else {}
+    if not to_clear:
+        raise HTTPException(status_code=400, detail=f"Unknown table: {table}")
+    counts = {}
+    for name, model in to_clear.items():
+        q = db.query(model)
+        if upload_date and hasattr(model, 'upload_date'):
+            q = q.filter(model.upload_date == upload_date)
+        counts[name] = q.delete()
+        db.commit()
+    return {"deleted": counts}
