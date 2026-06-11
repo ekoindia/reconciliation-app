@@ -274,6 +274,11 @@ class Transaction(Base):
 
     # ── Audit / raw storage ───────────────────────────────────────────────────
     raw_data         = Column(Text)                           # full original row as JSON
+    # Original free-text bank-statement narration/description, BANK SIDE ONLY
+    # (NULL for internal-dump rows). Read-only display field — never used in
+    # matching. Populated on ingest from the mapped description column and
+    # backfilled from raw_data for pre-existing rows.
+    bank_description = Column(Text, nullable=True)
 
     # ── Recon state ───────────────────────────────────────────────────────────
     recon_status     = Column(String(30),  default=ReconStatus.unmatched)
@@ -1260,6 +1265,8 @@ def _run_migrations():
             ("assigned_to", "VARCHAR(100)"), ("assigned_at", "DATETIME"),
             ("exception_reason", "VARCHAR(40)"),
             ("bank_account", "VARCHAR(40)"),
+            # Read-only bank-statement narration (bank side only)
+            ("bank_description", "TEXT"),
         ],
         "audit_logs": [("action_type", "VARCHAR(10)"), ("previous_state", "TEXT")],
         "evalue_bank_txns": [

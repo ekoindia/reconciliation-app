@@ -253,6 +253,88 @@ def _backfill_match_ids():
         db.close()
 
 
+def _backfill_bank_descriptions():
+    """
+    Populate Transaction.bank_description for pre-existing BANK-SIDE rows created
+    before this column existed (it is filled on ingest going forward). The
+    original narration was always preserved inside raw_data; this re-derives it
+    using the same precedence as ingestion: the session's mapped description
+    column, then common bank-statement header names, then an IMPS/NEFT/RTGS scan.
+
+    Internal-dump rows are never touched (they must stay NULL → never displayed).
+    Idempotent + batched: only rows where bank_description IS NULL are processed,
+    and every processed row is set to a non-NULL value ("" when there is no
+    narration), so it drains to a no-op after the first run.
+    """
+    import json as _json, re as _re
+    from models.database import UploadSession
+
+    _DESC_HEADERS = {
+        "description", "particulars", "particular", "narration", "narrative",
+        "remarks", "remark", "details", "transaction details", "transaction remarks",
+    }
+
+    db = SessionLocal()
+    try:
+        _map_cache: dict = {}   # upload_session_id -> description file-column (or None)
+
+        def _desc_col_for(session_id):
+            if session_id in _map_cache:
+                return _map_cache[session_id]
+            col = None
+            if session_id:
+                sess = db.query(UploadSession).filter(UploadSession.id == session_id).first()
+                raw_map = sess.column_mapping if sess else None
+                if raw_map:
+                    try:
+                        m = raw_map if isinstance(raw_map, dict) else _json.loads(raw_map)
+                        col = (m.get("description") or None) if isinstance(m, dict) else None
+                    except Exception:
+                        col = None
+            _map_cache[session_id] = col
+            return col
+
+        total = 0
+        while True:
+            batch = (db.query(Transaction)
+                       .filter(Transaction.side == "bank",
+                               Transaction.bank_description.is_(None))
+                       .limit(1000).all())
+            if not batch:
+                break
+            for t in batch:
+                desc = ""
+                try:
+                    row = _json.loads(t.raw_data) if t.raw_data else {}
+                except Exception:
+                    row = {}
+                if isinstance(row, dict) and row:
+                    dc = _desc_col_for(t.upload_session_id)
+                    if dc and dc in row:
+                        desc = str(row.get(dc, "")).strip()
+                    if not desc:
+                        for k, v in row.items():
+                            if str(k).strip().lower() in _DESC_HEADERS:
+                                desc = str(v).strip()
+                                if desc:
+                                    break
+                    if not desc:
+                        for v in row.values():
+                            if _re.search(r'(?:IMPS|NEFT|RTGS)/', str(v), _re.IGNORECASE):
+                                desc = str(v).strip()
+                                break
+                t.bank_description = desc   # "" marks the row processed (drops out of IS NULL)
+            db.commit()
+            total += len(batch)
+        if total:
+            print(f"[startup] Backfilled bank_description for {total} bank transaction(s)")
+    except Exception as e:
+        print(f"[startup] bank_description backfill error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def startup():
     """
@@ -269,7 +351,8 @@ def startup():
     # Index creation and one-off data repairs must NOT be able to crash startup —
     # a single hiccup here would otherwise take the whole API down. Each is
     # independent and safe to skip for this boot.
-    for _step in (_apply_indexes, _repair_duplicate_match_ids, _backfill_match_ids):
+    for _step in (_apply_indexes, _repair_duplicate_match_ids, _backfill_match_ids,
+                  _backfill_bank_descriptions):
         try:
             _step()
         except Exception as _e:

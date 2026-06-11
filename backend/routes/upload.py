@@ -1488,7 +1488,12 @@ def confirm_mapping(
             row_type=row_type,
             recon_status=auto_recon_status,
             bank_account=_bank_acct,
-            raw_data=json.dumps(row_dict)
+            raw_data=json.dumps(row_dict),
+            # Store the original bank narration for display (bank side only;
+            # internal-dump rows keep NULL). Empty string (not NULL) for bank
+            # rows with no narration, so the startup backfill's IS NULL filter
+            # only ever touches pre-existing rows. Read-only — not used in matching.
+            bank_description=(desc_val or "") if is_bank_side else None,
         )
         txns.append(txn)
 

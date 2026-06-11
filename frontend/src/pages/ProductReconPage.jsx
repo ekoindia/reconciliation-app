@@ -96,7 +96,7 @@ function ProductReconTab({ slug, partners }) {
   // Per-column keyword filters (client-side, over the loaded page).
   // Each box accepts one or many keywords (comma/space separated) — a row matches
   // a column if ANY keyword is contained in it, and must match every filled box.
-  const [colF, setColF] = useState({ eko_tid: '', tracking_number: '', match_id: '', recon_status: '', side: '', amount: '' })
+  const [colF, setColF] = useState({ eko_tid: '', tracking_number: '', match_id: '', recon_status: '', side: '', amount: '', bank_description: '' })
   // Recon ID filter goes to the server (so it returns the whole match across pages);
   // debounce the keystrokes into reconIdQuery.
   const [reconIdQuery, setReconIdQuery] = useState('')
@@ -558,14 +558,15 @@ function ProductReconTab({ slug, partners }) {
         </div>
         {(() => { const visibleRows = rows.filter(r =>
           _hit(r.side, colF.side) && _hit(r.eko_tid, colF.eko_tid) && _hit(r.tracking_number, colF.tracking_number) &&
-          _hit(r.amount, colF.amount) && _hit(r.match_id, colF.match_id) && _hit(r.recon_status, colF.recon_status)); return (
+          _hit(r.amount, colF.amount) && _hit(r.match_id, colF.match_id) && _hit(r.recon_status, colF.recon_status) &&
+          _hit(r.bank_description, colF.bank_description)); return (
         loading ? <p className="text-xs text-gray-400 py-4 text-center">Loading…</p> : (
           <div className="overflow-x-auto"><table className="w-full text-xs">
             <thead>
             <tr className="border-b text-gray-500">
               <th className="table-th w-8"><input type="checkbox" checked={visibleRows.length > 0 && visibleRows.every(r => selected.has(r.id))} onChange={() => setSelected(s => { const all = visibleRows.every(r => s.has(r.id)); const n = new Set(s); visibleRows.forEach(r => all ? n.delete(r.id) : n.add(r.id)); return n })} /></th>
               <th className="table-th">Side</th><th className="table-th">Eko TID</th><th className="table-th">Tracking No</th>
-              <th className="table-th text-right">Amount</th><th className="table-th">Txn Date</th><th className="table-th">Recon ID</th><th className="table-th">Status</th><th className="table-th">Actions</th>
+              <th className="table-th text-right">Amount</th><th className="table-th">Txn Date</th><th className="table-th">Recon ID</th><th className="table-th">Status</th><th className="table-th">Description</th><th className="table-th">Actions</th>
             </tr>
             <tr className="border-b border-gray-100 bg-gray-50/40">
               <th className="px-1 py-1"></th>
@@ -576,7 +577,8 @@ function ProductReconTab({ slug, partners }) {
               <th className="px-1 py-1"></th>
               <th className="px-1 py-1"><input className="input text-[11px] py-0.5 w-full" placeholder="recon id…" value={colF.match_id} onChange={e => setColF(f => ({ ...f, match_id: e.target.value }))} /></th>
               <th className="px-1 py-1"><input className="input text-[11px] py-0.5 w-full" placeholder="status…" value={colF.recon_status} onChange={e => setColF(f => ({ ...f, recon_status: e.target.value }))} /></th>
-              <th className="px-1 py-1">{colFActive && <button onClick={() => setColF({ eko_tid: '', tracking_number: '', match_id: '', recon_status: '', side: '', amount: '' })} className="text-[10px] text-gray-400 hover:text-gray-600">clear</button>}</th>
+              <th className="px-1 py-1"><input className="input text-[11px] py-0.5 w-full" placeholder="narration…" value={colF.bank_description} onChange={e => setColF(f => ({ ...f, bank_description: e.target.value }))} /></th>
+              <th className="px-1 py-1">{colFActive && <button onClick={() => setColF({ eko_tid: '', tracking_number: '', match_id: '', recon_status: '', side: '', amount: '', bank_description: '' })} className="text-[10px] text-gray-400 hover:text-gray-600">clear</button>}</th>
             </tr>
             </thead>
             <tbody>{visibleRows.length === 0 ? <tr><td colSpan="9" className="text-center text-gray-400 py-4">{rows.length ? 'No rows match the column filters.' : 'No rows — upload data and run reconciliation.'}</td></tr> : visibleRows.map((r, i) => (
@@ -591,6 +593,11 @@ function ProductReconTab({ slug, partners }) {
                 <td className="table-td">
                   <span className={`px-2 py-0.5 rounded-full capitalize ${STATUS_COLOR[r.recon_status] || 'bg-gray-100 text-gray-600'}`}>{(r.recon_status || '').replace(/_/g, ' ')}</span>
                   {r.assigned_to && <div className="text-[10px] text-indigo-500 mt-0.5">@{r.assigned_to}{r.exception_reason ? ` · ${r.exception_reason}` : ''}</div>}
+                </td>
+                <td className="table-td max-w-[16rem]">
+                  {r.side === 'bank' && r.bank_description
+                    ? <span className="text-xs text-gray-600 block truncate" title={r.bank_description}>{r.bank_description}</span>
+                    : <span className="text-gray-300">—</span>}
                 </td>
                 <td className="table-td"><div className="flex gap-1">
                   <button title="Assign owner" onClick={() => assignRow(r)} className="p-1 rounded hover:bg-indigo-50 text-indigo-600"><UserPlus size={12} /></button>

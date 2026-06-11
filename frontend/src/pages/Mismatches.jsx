@@ -126,6 +126,7 @@ export default function Mismatches() {
                   <th className="table-th text-right text-blue-600">Bank Amt</th>
                   <th className="table-th text-right text-green-600">Internal Amt</th>
                   <th className="table-th text-right text-red-500">Delta</th>
+                  <th className="table-th">Bank Description</th>
                   {canResolve && <th className="table-th">Action</th>}
                 </tr>
               </thead>
@@ -150,6 +151,9 @@ export default function Mismatches() {
                       <span className={`font-semibold ${Math.abs(row.delta) > 100 ? 'text-red-600' : 'text-orange-500'}`}>
                         {row.delta > 0 ? '+' : ''}{(row.delta || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                       </span>
+                    </td>
+                    <td className="table-td max-w-[16rem]">
+                      <span className="text-xs text-gray-500 block truncate" title={row.bank_description || ''}>{row.bank_description || '—'}</span>
                     </td>
                     {canResolve && (
                       <td className="table-td">

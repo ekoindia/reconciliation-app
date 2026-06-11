@@ -51,6 +51,7 @@ def export_open_items(
     match_id:         Optional[str] = None,
     aging:            Optional[str] = None,
     recon_status:     Optional[str] = None,
+    bank_description: Optional[str] = None,   # substring search over bank narration
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("reports"))
 ):
@@ -91,6 +92,8 @@ def export_open_items(
     if side:    q = q.filter(Transaction.side == side)
     if src_code: q = q.filter(Transaction.src_code == src_code)
     if match_id: q = q.filter(Transaction.match_id.ilike(f"%{match_id}%"))
+    if bank_description:
+        q = q.filter(Transaction.bank_description.ilike(f"%{bank_description}%"))
 
     # Date: single date takes precedence over range
     if recon_date:
@@ -142,12 +145,14 @@ def export_open_items(
         "SRC Note":         t.src_note        or "",
         "Override By":      getattr(t, "override_by", "") or "",
         "Override Note":    getattr(t, "override_note", "") or "",
+        # Bank narration (bank side only; internal rows stay blank)
+        "Bank Description": (getattr(t, "bank_description", "") or "") if t.side == "bank" else "",
     } for t in txns]
 
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
         "Partner","Side","Recon Date","Transaction Date","Recon Status","Row Type",
         "Eko TID","Tracking Number","UTR Number","Amount","DR/CR","Txn Status",
-        "Match ID","SRC Code","SRC Note","Override By","Override Note"
+        "Match ID","SRC Code","SRC Note","Override By","Override Note","Bank Description"
     ])
 
     output = io.BytesIO()
@@ -414,6 +419,8 @@ def export_matched_pairs(
         row["Match Type"] = b.recon_status
         for k, v in irow.items():
             row[f"Internal – {k}"] = v
+        # Bank narration (bank side only) — appended last so no existing column moves
+        row["Bank – Description"] = getattr(b, "bank_description", "") or ""
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -523,7 +530,8 @@ def export_eod_summary(
     open_items = unmatched + amt_mismatch + src_assigned
     ws2 = wb.create_sheet("Open Items")
     headers2 = ["Side", "Eko TID", "Tracking No", "UTR No", "Amount",
-                "DR/CR", "Txn Date", "Recon Status", "SRC Code", "SRC Note"]
+                "DR/CR", "Txn Date", "Recon Status", "SRC Code", "SRC Note",
+                "Bank Description"]
     for c, h in enumerate(headers2, 1):
         cell = ws2.cell(1, c, h)
         cell.fill = header_fill
@@ -539,7 +547,8 @@ def export_eod_summary(
         ws2.cell(r, 8, t.recon_status)
         ws2.cell(r, 9, t.src_code or "")
         ws2.cell(r, 10, t.src_note or "")
-    for c in range(1, 11):
+        ws2.cell(r, 11, (getattr(t, "bank_description", "") or "") if t.side == "bank" else "")
+    for c in range(1, 12):
         ws2.column_dimensions[get_column_letter(c)].width = 18
 
     # ── Sheet 3: SRC Breakdown ────────────────────────────────────────────────
@@ -717,6 +726,8 @@ def _txn_rows(txns):
         "Match ID":         t.match_id or "",
         "SRC Code":         t.src_code or "",
         "SRC Note":         t.src_note or "",
+        # Bank narration (bank side only; internal rows blank)
+        "Bank Description": (getattr(t, "bank_description", "") or "") if t.side == "bank" else "",
     } for t in txns]
 
 

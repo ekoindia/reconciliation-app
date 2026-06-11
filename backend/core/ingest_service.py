@@ -395,6 +395,9 @@ def _ingest_dataframe_inner(
             recon_status=auto_recon_status,
             bank_account=_bank_acct,
             raw_data=json.dumps(row_dict),
+            # Original bank narration for display (bank side only; "" not NULL
+            # for no-narration bank rows so startup backfill only hits old rows).
+            bank_description=(desc_val or "") if is_bank_side else None,
         ))
 
     db.bulk_save_objects(txns)

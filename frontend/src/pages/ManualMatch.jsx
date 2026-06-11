@@ -87,7 +87,7 @@ export default function ManualMatch() {
   const queuedBankIds     = new Set(queue.map(p => p.bankItem.id))
   const queuedInternalIds = new Set(queue.map(p => p.internalItem.id))
 
-  const TxnRow = ({ item, isSelected, isQueued, onSelect, color }) => (
+  const TxnRow = ({ item, isSelected, isQueued, onSelect, color, showDesc = false }) => (
     <tr
       onClick={() => !isQueued && onSelect(item)}
       className={`border-b border-gray-50 transition-colors text-xs
@@ -106,6 +106,11 @@ export default function ManualMatch() {
       <td className="px-2 py-2 font-mono text-gray-400">{item.utr_number || '—'}</td>
       <td className="px-2 py-2 text-right tabular-nums font-medium">{item.amount?.toLocaleString('en-IN') || '—'}</td>
       <td className="px-2 py-2 font-mono text-gray-400 text-xs">{item.recon_date || '—'}</td>
+      {showDesc && (
+        <td className="px-2 py-2 text-gray-500 max-w-[14rem]">
+          <span className="block truncate" title={item.bank_description || ''}>{item.bank_description || '—'}</span>
+        </td>
+      )}
     </tr>
   )
 
@@ -223,17 +228,18 @@ export default function ManualMatch() {
                   <th className="px-2 py-2 text-left text-gray-500">UTR</th>
                   <th className="px-2 py-2 text-right text-gray-500">Amount</th>
                   <th className="px-2 py-2 text-left text-gray-500">Date</th>
+                  <th className="px-2 py-2 text-left text-gray-500">Description</th>
                 </tr>
               </thead>
               <tbody>
                 {bankItems.length === 0
-                  ? <tr><td colSpan={6} className="text-center py-8 text-gray-400 text-sm">No items — load first</td></tr>
+                  ? <tr><td colSpan={7} className="text-center py-8 text-gray-400 text-sm">No items — load first</td></tr>
                   : bankItems.map(item => (
                     <TxnRow key={item.id} item={item}
                       isSelected={pendingBank?.id === item.id}
                       isQueued={queuedBankIds.has(item.id)}
                       onSelect={handleSelectBank}
-                      color="blue" />
+                      color="blue" showDesc />
                   ))}
               </tbody>
             </table>

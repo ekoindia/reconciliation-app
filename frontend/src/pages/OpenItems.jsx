@@ -47,7 +47,7 @@ const SRC_CODES = [
   'INTERNAL_TXN','DELAYED_TXN','DUPLICATE','MISSING_TID','OTHER'
 ]
 
-const COLS = 16  // checkbox + 14 data cols + actions
+const COLS = 16  // checkbox + 14 data cols (incl. Description) + actions
 
 export default function OpenItems() {
   const [searchParams] = useSearchParams()
@@ -68,6 +68,7 @@ export default function OpenItems() {
     amount_min:       '',
     amount_max:       '',
     bank_account:     searchParams.get('bank_account') || '',
+    bank_description: '',
   }
 
   // ── All useState hooks FIRST — no hooks after this block ────────────────────
@@ -374,10 +375,16 @@ export default function OpenItems() {
             <input type="number" className="input" placeholder="∞" value={filters.amount_max}
               onChange={e => setFilters({...filters, amount_max: e.target.value})} />
           </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">Bank Description</label>
+            <input className="input" placeholder="word from narration" value={filters.bank_description}
+              title="Substring search over the bank statement narration (bank rows only)"
+              onChange={e => setFilters({...filters, bank_description: e.target.value})} />
+          </div>
         </div>
         <div className="flex gap-2 mt-3">
           <button onClick={() => load(1)} className="btn-primary flex items-center gap-1.5"><Search size={14} /> Search</button>
-          <button onClick={() => setFilters({ partner: '', recon_date: '', date_from: '', date_to: '', side: '', src_code: '', eko_tid: '', tracking_number: '', match_id: '', recon_status: '', aging: '', amount_min: '', amount_max: '', bank_account: '' })} className="btn-ghost">Clear</button>
+          <button onClick={() => setFilters({ partner: '', recon_date: '', date_from: '', date_to: '', side: '', src_code: '', eko_tid: '', tracking_number: '', match_id: '', recon_status: '', aging: '', amount_min: '', amount_max: '', bank_account: '', bank_description: '' })} className="btn-ghost">Clear</button>
         </div>
       </div>
 
@@ -405,6 +412,7 @@ export default function OpenItems() {
                 <th className="table-th">Recon Status</th>
                 <th className="table-th">Recon ID</th>
                 <th className="table-th">SRC</th>
+                <th className="table-th">Description</th>
                 <th className="table-th">Actions</th>
               </tr>
             </thead>
@@ -467,6 +475,11 @@ export default function OpenItems() {
                     </td>
                     <td className="table-td">
                       {item.src_code ? <span className="badge-yellow">{item.src_code}</span> : '—'}
+                    </td>
+                    <td className="table-td max-w-xs">
+                      {item.side === 'bank' && item.bank_description
+                        ? <span className="text-xs text-gray-600 block truncate" title={item.bank_description}>{item.bank_description}</span>
+                        : <span className="text-gray-300">—</span>}
                     </td>
                     <td className="table-td">
                       <div className="flex flex-col gap-1">

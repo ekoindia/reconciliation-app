@@ -970,7 +970,15 @@ def get_p02_results(
     if recon_date: summary_q = summary_q.filter(SBIP02Result.recon_date == recon_date)
     summary = {s: c for s, c in summary_q.group_by(SBIP02Result.match_status).all()}
     rows = q.order_by(SBIP02Result.reference_number).offset((page-1)*page_size).limit(page_size).all()
-    data = [{k: getattr(r, k) for k in ('id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')} for r in rows]
+    # Bank-statement narration (read-only) for this page's rows, via the
+    # SBIP02Result → SBIBankTransaction FK. One batched lookup, no N+1.
+    _bt_ids = [r.bank_txn_id for r in rows if r.bank_txn_id]
+    _desc_map = {}
+    if _bt_ids:
+        _desc_map = dict(db.query(SBIBankTransaction.id, SBIBankTransaction.description)
+                           .filter(SBIBankTransaction.id.in_(_bt_ids)).all())
+    data = [{**{k: getattr(r, k) for k in ('id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')},
+             'bank_description': _desc_map.get(r.bank_txn_id) or ''} for r in rows]
     return {"rows": data, "summary": summary, "total": total, "page": page, "page_size": page_size}
 
 

@@ -323,6 +323,7 @@ function P02Tab() {
                     <th className="text-center px-3 py-2">Match</th>
                     <th className="text-center px-3 py-2">Reversal</th>
                     <th className="text-center px-3 py-2">Status</th>
+                    <th className="text-left px-3 py-2">Description</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -339,6 +340,7 @@ function P02Tab() {
                       <td className="px-3 py-2 text-center"><StatusBadge status={r.match_status}/></td>
                       <td className="px-3 py-2 text-center text-xs text-gray-500">{r.reversal_type || '—'}</td>
                       <td className="px-3 py-2 text-center"><span className={`text-xs font-medium ${r.success_status === 'Success' ? 'text-green-600' : 'text-red-500'}`}>{r.success_status}</span></td>
+                      <td className="px-3 py-2 text-gray-500 max-w-[180px]"><span className="block truncate" title={r.bank_description || ''}>{r.bank_description || '—'}</span></td>
                     </tr>
                   ))}
                 </tbody>

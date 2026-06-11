@@ -790,7 +790,7 @@ _UNIVERSAL_STATUS = {
 
 def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=None,
                  recon_status=None, eko_tid=None, tracking_number=None, match_id=None,
-                 amount_min=None, amount_max=None, aging=None, db=None):
+                 amount_min=None, amount_max=None, aging=None, bank_description=None, db=None):
     """Full filtered list of module rows in the core open-items shape (no pagination).
 
     Honours every Open-Items filter so combinations behave identically to the core
@@ -810,6 +810,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
     mid_q = (match_id or "").strip().lower()
     tid_list = [t.strip().lower() for t in (eko_tid or "").strip('()[]{} ').split(',') if t.strip()]
     trk_list = [t.strip().lower() for t in (tracking_number or "").strip('()[]{} ').split(',') if t.strip()]
+    desc_q = (bank_description or "").strip().lower()
 
     # Resolve which concrete module statuses this filter targets (None = no status gate).
     #   match_id lookup → ignore status   |   "all" → everything
@@ -841,6 +842,8 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
                 continue
             if trk_list and not any(t in str(item.get("tracking_number") or "").lower() for t in trk_list):
                 continue
+            if desc_q and desc_q not in str(item.get("bank_description") or "").lower():
+                continue
             try:
                 amt = float(item.get("amount") or 0)
                 if amount_min is not None and amt < float(amount_min): continue
@@ -865,6 +868,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "dr_cr": None, "status": b.status, "recon_status": b.recon_status,
             "match_id": b.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
+            "bank_description": None,  # BBPS operator reports carry no free-text narration
         }, "bank")
         _collect(db.query(BbpsInternal), "transaction_date", lambda i: {
             "id": i.id, "partner": "bbps", "side": "internal", "recon_date": i.transaction_date,
@@ -873,6 +877,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "dr_cr": None, "status": i.status, "recon_status": i.recon_status,
             "match_id": i.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
+            "bank_description": None,
         }, "internal")
     elif module == "evalue":
         from models.database import EvalueBankTxn, EvalueWalletLoad
@@ -883,6 +888,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "dr_cr": b.dr_cr, "status": None, "recon_status": b.recon_status,
             "match_id": b.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
+            "bank_description": b.description,  # E-Value bank txns already store the narration
         }, "bank")
         _collect(db.query(EvalueWalletLoad), "transaction_date", lambda l: {
             "id": l.id, "partner": "evalue", "side": "internal", "recon_date": l.transaction_date,
@@ -891,6 +897,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "dr_cr": None, "status": l.status, "recon_status": l.recon_status,
             "match_id": l.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
+            "bank_description": None,
         }, "internal")
 
     rows.sort(key=lambda x: str(x.get("recon_date") or ""), reverse=True)
@@ -927,6 +934,7 @@ def get_open_items(
     recon_status: Optional[str] = None,
     aging: Optional[str] = None,         # "d1" | "d3" | "d7"
     bank_account: Optional[str] = None,  # filter bank rows by source account number
+    bank_description: Optional[str] = None,  # substring search over bank narration
     assigned: Optional[str] = None,      # "me" | "unassigned" | "<username>"
     row_type: Optional[str] = None,
     amount_min:       Optional[float] = None,
@@ -941,7 +949,8 @@ def get_open_items(
     _mod_filters = dict(recon_date=recon_date, date_from=date_from, date_to=date_to,
                         side=side, recon_status=recon_status, eko_tid=eko_tid,
                         tracking_number=tracking_number, match_id=match_id,
-                        amount_min=amount_min, amount_max=amount_max, aging=aging)
+                        amount_min=amount_min, amount_max=amount_max, aging=aging,
+                        bank_description=bank_description)
     if partner in _MODULE_OPEN:
         return _module_open_items(partner, db, page, page_size, **_mod_filters)
 
@@ -989,6 +998,8 @@ def get_open_items(
     if src_code: q = q.filter(Transaction.src_code == src_code)
     if bank_account: q = q.filter(Transaction.bank_account == bank_account)
     if match_id: q = q.filter(Transaction.match_id.ilike(f"%{match_id}%"))
+    if bank_description:
+        q = q.filter(Transaction.bank_description.ilike(f"%{bank_description}%"))
 
     # Exception-workflow ownership filter
     if assigned == "me":
@@ -1288,6 +1299,7 @@ def get_mismatches(
             "bank_eko_tid":      b.eko_tid or "—",
             "bank_tracking":     b.tracking_number or "—",
             "bank_amount":       round(bank_amt, 2),
+            "bank_description":  getattr(b, "bank_description", None),
             "internal_txn_id":   i.id if i else None,
             "internal_eko_tid":  i.eko_tid if i else "—",
             "internal_amount":   round(int_amt, 2),
@@ -1462,6 +1474,8 @@ def _txn_to_dict(t: Transaction) -> dict:
         "assigned_to": getattr(t, "assigned_to", None),
         "exception_reason": getattr(t, "exception_reason", None),
         "bank_account": getattr(t, "bank_account", None),
+        # Read-only bank-statement narration (bank side only; NULL for internal).
+        "bank_description": (getattr(t, "bank_description", None) if t.side == "bank" else None),
         "days_open": days_open,
         "aging_bucket": aging_bucket,
     }
