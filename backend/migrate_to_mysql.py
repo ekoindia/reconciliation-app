@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-from sqlalchemy import create_engine, select, func, text
+from sqlalchemy import create_engine, select, func, text, inspect as sa_inspect
 from models.database import Base
 
 # ── Source: SQLite ────────────────────────────────────────────────────────────
@@ -72,8 +72,17 @@ def migrate_table(table) -> tuple:
 
     pk_cols = _pk_cols(table)
 
+    # Only copy columns present in BOTH the source DB and the model, so the
+    # migration is robust to schema drift (a column the model added later but the
+    # source predates, or vice-versa). Missing columns land as NULL/default.
+    src_col_names = {c["name"] for c in sa_inspect(sqlite_engine).get_columns(name)}
+    use_cols = [c for c in table.columns if c.name in src_col_names]
+    skipped_cols = [c.name for c in table.columns if c.name not in src_col_names]
+    if skipped_cols:
+        print(f"  {name:32s}  (note: source lacks {skipped_cols} — will be NULL/default)")
+
     with sqlite_engine.connect() as src:
-        rows = [dict(r) for r in src.execute(select(table)).mappings().all()]
+        rows = [dict(r) for r in src.execute(select(*use_cols)).mappings().all()]
     src_count = len(rows)
     if src_count == 0:
         print(f"  {name:32s}  0 rows")
