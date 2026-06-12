@@ -1,102 +1,145 @@
 """
-SQLite → MySQL Migration Script
+SQLite -> MySQL Migration Script
 ================================
-Run this ONCE after setting up MySQL to move all existing data over.
+Moves ALL existing data from the local SQLite database into MySQL.
 
 Steps:
-  1. Set DATABASE_URL in backend/.env to your MySQL connection string
-  2. Make sure the MySQL database (eko_recon) exists:
+  1. Provision MySQL and create the database, e.g.:
        CREATE DATABASE eko_recon CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-  3. Run:  python migrate_to_mysql.py
-  4. Restart the backend — it will now talk to MySQL
+  2. Set DATABASE_URL in backend/.env to the MySQL connection string, e.g.:
+       DATABASE_URL=mysql+pymysql://user:password@localhost:3306/eko_recon
+  3. Run:  python migrate_to_mysql.py  [path-to-source.db]
+       (source defaults to ./recon.db)
+  4. Verify the row-count report prints "ALL TABLES MATCH", then restart the backend.
 
-Safe to re-run: it only inserts rows that don't already exist in MySQL.
+Design notes:
+  - Copies EVERY table defined in the models, in foreign-key-safe order
+    (Base.metadata.sorted_tables), not just a hand-picked subset.
+  - Reads through the ORM metadata so column types are marshalled correctly
+    (SQLite ISO datetime strings -> real datetimes, 0/1 -> bool, etc.).
+  - Idempotent: skips rows whose primary key already exists in MySQL, so it is
+    safe to re-run after a partial load.
+  - NON-DESTRUCTIVE: only ever INSERTs into MySQL; never touches the SQLite source.
 """
 
-import os, sys, json
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-# ── Source: SQLite ────────────────────────────────────────────────────────────
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, select, func, text
+from models.database import Base
 
-SQLITE_URL = "sqlite:///./recon.db"
-sqlite_engine  = create_engine(SQLITE_URL, connect_args={"check_same_thread": False})
-SQLiteSession  = sessionmaker(bind=sqlite_engine)
+# ── Source: SQLite ────────────────────────────────────────────────────────────
+SQLITE_PATH = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "recon.db")
+if not os.path.exists(SQLITE_PATH):
+    print(f"ERROR: source SQLite file not found: {SQLITE_PATH}")
+    sys.exit(1)
+SQLITE_URL = "sqlite:///" + SQLITE_PATH.replace("\\", "/")
+sqlite_engine = create_engine(SQLITE_URL, connect_args={"check_same_thread": False})
 
 # ── Target: MySQL (from .env) ─────────────────────────────────────────────────
-MYSQL_URL = os.getenv("DATABASE_URL")
+MYSQL_URL = os.getenv("DATABASE_URL", "")
 if not MYSQL_URL or "sqlite" in MYSQL_URL:
-    print("ERROR: DATABASE_URL in .env must point to MySQL, not SQLite.")
-    print("  Example: mysql+pymysql://root:password@localhost:3306/eko_recon")
+    print("ERROR: DATABASE_URL in backend/.env must point to MySQL, not SQLite.")
+    print("  Example: mysql+pymysql://user:password@localhost:3306/eko_recon")
     sys.exit(1)
+mysql_engine = create_engine(MYSQL_URL, pool_pre_ping=True)
 
-mysql_engine  = create_engine(MYSQL_URL, pool_pre_ping=True)
-MySQLSession  = sessionmaker(bind=mysql_engine)
-
-# ── Create all tables + indexes in MySQL ──────────────────────────────────────
-from models.database import Base, init_db
-
-print("Creating MySQL tables and indexes...")
-Base.metadata.create_all(bind=mysql_engine)
-print("  ✓ Tables created")
+BATCH = 1000
 
 
-# ── Helper: migrate a table row by row ────────────────────────────────────────
-def migrate_table(table_name: str, pk_col: str = "id"):
-    with sqlite_engine.connect() as src, mysql_engine.connect() as dst:
-        rows = src.execute(text(f"SELECT * FROM {table_name}")).mappings().all()
-        if not rows:
-            print(f"  {table_name}: 0 rows (skipped)")
-            return
-
-        cols      = list(rows[0].keys())
-        col_list  = ", ".join(f"`{c}`" for c in cols)
-        placeholders = ", ".join(f":{c}" for c in cols)
-
-        inserted = 0
-        skipped  = 0
-        for row in rows:
-            row_dict = dict(row)
-            # Check if already exists in MySQL
-            exists = dst.execute(
-                text(f"SELECT 1 FROM `{table_name}` WHERE `{pk_col}` = :{pk_col}"),
-                {pk_col: row_dict[pk_col]}
-            ).fetchone()
-
-            if exists:
-                skipped += 1
-                continue
-
-            # Clean None values from integer columns that MySQL won't accept as NULL strings
-            dst.execute(
-                text(f"INSERT INTO `{table_name}` ({col_list}) VALUES ({placeholders})"),
-                row_dict
-            )
-            inserted += 1
-
-        dst.commit()
-        print(f"  {table_name}: {inserted} inserted, {skipped} already existed")
+def _sqlite_has_table(name: str) -> bool:
+    with sqlite_engine.connect() as c:
+        r = c.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name})
+        return r.fetchone() is not None
 
 
-# ── Run migrations in dependency order ────────────────────────────────────────
-tables_in_order = [
-    "users",
-    "upload_sessions",
-    "transactions",
-    "recon_runs",
-    "match_rules",
-    "column_mapping_templates",
-]
+def _pk_cols(table):
+    pk = list(table.primary_key.columns)
+    return pk if pk else [table.c.id] if "id" in table.c else []
 
-print("\nMigrating data...")
-for table in tables_in_order:
-    try:
-        migrate_table(table)
-    except Exception as e:
-        print(f"  ERROR on {table}: {e}")
 
-print("\nDone. Verify row counts in MySQL then update .env for production use.")
+def migrate_table(table) -> tuple:
+    """Copy one table SQLite -> MySQL. Returns (inserted, skipped, src_count)."""
+    name = table.name
+    if not _sqlite_has_table(name):
+        print(f"  {name:32s}  (not in source — skipped)")
+        return (0, 0, 0)
+
+    pk_cols = _pk_cols(table)
+
+    with sqlite_engine.connect() as src:
+        rows = [dict(r) for r in src.execute(select(table)).mappings().all()]
+    src_count = len(rows)
+    if src_count == 0:
+        print(f"  {name:32s}  0 rows")
+        return (0, 0, 0)
+
+    # Existing PKs already in MySQL (so re-runs are idempotent)
+    with mysql_engine.connect() as dst:
+        existing = set()
+        if pk_cols:
+            for r in dst.execute(select(*pk_cols)).all():
+                existing.add(tuple(r))
+
+    def pk_of(row):
+        return tuple(row[c.name] for c in pk_cols) if pk_cols else None
+
+    fresh = [r for r in rows if pk_of(r) not in existing] if pk_cols else rows
+    skipped = src_count - len(fresh)
+
+    inserted = 0
+    with mysql_engine.begin() as dst:
+        for i in range(0, len(fresh), BATCH):
+            chunk = fresh[i:i + BATCH]
+            if chunk:
+                dst.execute(table.insert(), chunk)
+                inserted += len(chunk)
+
+    print(f"  {name:32s}  {inserted} inserted, {skipped} already existed  (source {src_count})")
+    return (inserted, skipped, src_count)
+
+
+def main():
+    print(f"Source SQLite : {SQLITE_PATH}")
+    print(f"Target MySQL  : {MYSQL_URL.split('@')[-1]}")   # host/db only, never the password
+    print("\nCreating MySQL tables + indexes (widened String(36) UUID keys)...")
+    Base.metadata.create_all(bind=mysql_engine)
+    print("  tables ready")
+
+    print("\nMigrating data (foreign-key-safe order)...")
+    results = {}
+    for table in Base.metadata.sorted_tables:
+        try:
+            results[table.name] = migrate_table(table)
+        except Exception as e:
+            print(f"  ERROR on {table.name}: {e}")
+            results[table.name] = ("ERR", "ERR", "ERR")
+
+    # ── Verification: compare row counts SQLite vs MySQL ──────────────────────
+    print("\nVerifying row counts...")
+    all_ok = True
+    for table in Base.metadata.sorted_tables:
+        name = table.name
+        if not _sqlite_has_table(name):
+            continue
+        with sqlite_engine.connect() as s:
+            sc = s.execute(select(func.count()).select_from(table)).scalar()
+        with mysql_engine.connect() as m:
+            mc = m.execute(select(func.count()).select_from(table)).scalar()
+        flag = "OK " if sc == mc else "MISMATCH"
+        if sc != mc:
+            all_ok = False
+        if sc or mc:
+            print(f"  [{flag}] {name:32s} sqlite={sc}  mysql={mc}")
+
+    print("\n" + ("ALL TABLES MATCH — migration complete." if all_ok
+                  else "ROW-COUNT MISMATCH — review the table(s) flagged above before switching over."))
+
+
+if __name__ == "__main__":
+    main()

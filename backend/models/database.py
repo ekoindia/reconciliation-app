@@ -601,7 +601,7 @@ class AepsSettlement(Base):
     """
     __tablename__ = "aeps_settlements"
 
-    id                 = Column(String(20), primary_key=True, default=generate_id)
+    id                 = Column(String(36), primary_key=True, default=generate_id)
     upload_date        = Column(String(10))            # YYYY-MM-DD when we uploaded
     created_date       = Column(String(10), index=True) # T Plus "Created Date"
     settle_timestamp   = Column(String(30))            # "Settle Timestamp"
@@ -629,7 +629,7 @@ class AepsAnomaly(Base):
     """
     __tablename__ = "aeps_anomalies"
 
-    id                = Column(String(20), primary_key=True, default=generate_id)
+    id                = Column(String(36), primary_key=True, default=generate_id)
     upload_date       = Column(String(10))
     rrn               = Column(String(50), index=True)  # = tracking number
     amount            = Column(MONEY, default=0)
@@ -651,7 +651,7 @@ class AepsCIB(Base):
     """
     __tablename__ = "aeps_cib"
 
-    id               = Column(String(20), primary_key=True, default=generate_id)
+    id               = Column(String(36), primary_key=True, default=generate_id)
     upload_date      = Column(String(10))
     recovery_date    = Column(String(10), index=True)   # date deducted from settlement
     rrn              = Column(String(50), index=True)   # = tracking number
@@ -675,7 +675,7 @@ class PIIntegrityCheck(Base):
     """
     __tablename__ = "pi_integrity_checks"
 
-    id                = Column(String(20), primary_key=True, default=generate_id)
+    id                = Column(String(36), primary_key=True, default=generate_id)
     partner           = Column(String(20), index=True)   # 'aeps'
     recon_date        = Column(String(10), index=True)   # YYYY-MM-DD (from Fingpay session.recon_date)
     cw_amount         = Column(MONEY, nullable=True)     # sum(Transaction Amount, Status=Success) from Fingpay cw file
@@ -704,7 +704,7 @@ class SettlementBankConfig(Base):
     """
     __tablename__ = "settlement_bank_configs"
 
-    id                 = Column(String(20), primary_key=True, default=generate_id)
+    id                 = Column(String(36), primary_key=True, default=generate_id)
     partner            = Column(String(50), unique=True, index=True)  # 'pg', 'aeps', 'qr'
     partner_label      = Column(String(100))            # e.g. "PayU (Accept Payment)"
     bank_name          = Column(String(100))            # e.g. "Axis Bank"
@@ -727,7 +727,7 @@ class SBIBankTransaction(Base):
     """
     __tablename__ = "sbi_bank_transactions"
 
-    id            = Column(String(20), primary_key=True, default=generate_id)
+    id            = Column(String(36), primary_key=True, default=generate_id)
     upload_date   = Column(String(10), index=True)
     txn_date      = Column(String(10), index=True)
     value_date    = Column(String(10))
@@ -752,7 +752,7 @@ class SBITxnReport(Base):
     """
     __tablename__ = "sbi_txn_reports"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     upload_date     = Column(String(10), index=True)
     source_file     = Column(String(100))             # which of the 7 files this came from
     ko_id           = Column(String(20), index=True)
@@ -780,7 +780,7 @@ class SBIKOLimits(Base):
     """
     __tablename__ = "sbi_ko_limits"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     upload_date     = Column(String(10), index=True)
     txn_datetime    = Column(String(30))
     txn_date        = Column(String(10), index=True)
@@ -801,7 +801,7 @@ class SBIKOCashHolding(Base):
     """
     __tablename__ = "sbi_ko_cash_holding"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     upload_date     = Column(String(10), index=True)
     report_date     = Column(String(10), index=True)
     ko_id           = Column(String(20), index=True, unique=False)
@@ -823,7 +823,7 @@ class SBILimitFailure(Base):
     """
     __tablename__ = "sbi_limit_failures"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     upload_date     = Column(String(10), index=True)
     txn_date        = Column(String(10), index=True)
     csp_code        = Column(String(20), index=True)
@@ -842,7 +842,7 @@ class SBICSPMaster(Base):
     """
     __tablename__ = "sbi_csp_master"
 
-    id          = Column(String(20), primary_key=True, default=generate_id)
+    id          = Column(String(36), primary_key=True, default=generate_id)
     upload_date = Column(String(10), index=True)
     csp_code    = Column(String(20), index=True)
     ref_number  = Column(String(100), index=True)
@@ -857,7 +857,7 @@ class SBIP01Result(Base):
     """
     __tablename__ = "sbi_p01_results"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     recon_date      = Column(String(10), index=True)
     ko_id           = Column(String(20), index=True)
     wallet_withdrawn= Column(MONEY, default=0)    # from KO Limits Config KO Withdrawal
@@ -877,10 +877,10 @@ class SBIP02Result(Base):
     """
     __tablename__ = "sbi_p02_results"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     recon_date      = Column(String(10), index=True)
-    bank_txn_id     = Column(String(20))          # FK to sbi_bank_transactions.id
-    txn_report_id   = Column(String(20))          # FK to sbi_txn_reports.id (if matched)
+    bank_txn_id     = Column(String(36))          # FK to sbi_bank_transactions.id
+    txn_report_id   = Column(String(36))          # FK to sbi_txn_reports.id (if matched)
     reference_number= Column(String(100), index=True)
     ko_id           = Column(String(20))
     bank_amount     = Column(MONEY)
@@ -901,7 +901,7 @@ class SBIP03Result(Base):
     """
     __tablename__ = "sbi_p03_results"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     recon_date      = Column(String(10), index=True)
     csp_code        = Column(String(20), index=True)
     mode            = Column(String(30))          # Cash / CDM / Electronic
@@ -924,7 +924,7 @@ class SBIP04Result(Base):
     """
     __tablename__ = "sbi_p04_results"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     recon_date      = Column(String(10), index=True)
     csp_code        = Column(String(20), index=True)
     failed_amount   = Column(MONEY)               # from Limit Fail Report
@@ -947,7 +947,7 @@ class QRSettlement(Base):
     """
     __tablename__ = "qr_settlements"
 
-    id                    = Column(String(20), primary_key=True, default=generate_id)
+    id                    = Column(String(36), primary_key=True, default=generate_id)
     upload_date           = Column(String(10))
     settlement_id         = Column(String(50), index=True)
     payment_date          = Column(String(30))
@@ -974,7 +974,7 @@ class QRChargeback(Base):
     """
     __tablename__ = "qr_chargebacks"
 
-    id              = Column(String(20), primary_key=True, default=generate_id)
+    id              = Column(String(36), primary_key=True, default=generate_id)
     case_date       = Column(String(10), index=True)   # Case Received date
     adj_type        = Column(String(100))              # Complaint Raise / etc.
     txn_date        = Column(String(10))               # Txndate
