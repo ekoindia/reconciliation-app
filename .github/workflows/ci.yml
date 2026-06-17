@@ -22,7 +22,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest
+          pip install pytest ruff
+      - name: Lint (ruff)
+        # Non-blocking: the codebase predates the linter (see backend/pyproject.toml).
+        # Surfaces issues on every commit; rules are tightened gradually.
+        continue-on-error: true
+        run: ruff check .
       - name: Syntax check
         run: python -m compileall -q core models routes main.py
       - name: Run tests
