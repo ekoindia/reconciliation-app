@@ -6,12 +6,17 @@ Eko Recon processes financial transaction data, so we take security reports seri
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Email **finance@eko.co.in** with:
+Report privately through the GitHub Security Advisory — go to the **"Security"** tab
+and choose **"Report a Vulnerability"**
+([direct link](https://github.com/ekoindia/reconciliation-app/security/advisories/new)).
+You can also email **app.support@eko.co.in**.
+
+Please include:
 - A description of the vulnerability and its impact
 - Steps to reproduce
 - Any suggested remediation
 
-You should receive an acknowledgement within 5 business days.
+The team will acknowledge your report and keep you informed of progress toward a fix.
 
 ## Scope
 

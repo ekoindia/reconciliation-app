@@ -62,6 +62,20 @@ pytest tests/ -q
    cd frontend && npm run build
    ```
 
+## Branching model
+
+- `main` — stable, released code.
+- `dev` — integration branch for the next release; branch features off `dev` and open PRs against it.
+- `feature/<name>` — new features (branch from `dev`).
+- `bugfix/<name>` — non-urgent fixes (branch from `dev`).
+- `hotfix/<name>` — urgent fixes to a release (branch from `main`, merged back into both).
+
+## Commit messages
+
+Lowercase, present-tense, imperative, and prefixed by type — e.g.
+`feat: add bank-statement narration`. Common prefixes: `feat`, `fix`, `docs`, `style`,
+`refactor`, `test`, `chore`, `ci`, `security`, `config`.
+
 ## Reporting bugs
 
 Open a GitHub issue with:

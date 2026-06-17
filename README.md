@@ -10,6 +10,9 @@ Built by the finance operations team at Eko Bharat Ventures and battle-tested on
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB)](backend/requirements.txt)
 [![React](https://img.shields.io/badge/React-18-61DAFB)](frontend/package.json)
+[![GitHub issues](https://img.shields.io/github/issues/ekoindia/reconciliation-app)](https://github.com/ekoindia/reconciliation-app/issues)
+<a href="https://developers.eko.in" target="_blank">![Eko.in](https://img.shields.io/badge/Develop%20with-Eko.in-brightgreen)</a>
+<a href="https://twitter.com/intent/follow?screen_name=ekospeaks" target="_blank">![Twitter Follow](https://img.shields.io/twitter/follow/ekospeaks?label=Follow&style=social)</a>
 
 ---
 
@@ -18,6 +21,7 @@ Built by the finance operations team at Eko Bharat Ventures and battle-tested on
 | Capability | Detail |
 |---|---|
 | **Multi-format ingestion** | CSV, XLSX/XLS, PDF (auto table extraction), tab-separated text. Auto header detection, format auto-recognition from column signatures, saveable column-mapping templates. |
+| **Bank-statement narration** | The full bank/partner statement description is shown on every bank-side transaction — across the recon workbench, Open Items, and every product module — and in all exports. Searchable, read-only, and backfilled for already-uploaded statements. |
 | **Wrong-file protection** | FREC (file recognition check) and WLR (wrong-record detection) hard-block files uploaded under the wrong partner/format. Duplicate uploads blocked by slot guard + SHA-256 file hashing. |
 | **Rule-based matching** | Priority-ordered match rules per partner (TID / tracking number / UTR / amount), editable in the UI Logic Builder. Amount tolerance flags `amount_mismatch` instead of silently matching. |
 | **Special passes** | Reversal pairing, NEFT D+1 carry, internal Success+Refund contra, cross-bank interbank transfers, configurable D+N carry-forward. |
@@ -68,7 +72,7 @@ The image builds the frontend and serves it from the backend, so one container i
 
 - **`backend/.env`** — secret key, database URL, CORS origins, SMTP for report emails, schedule times. See [backend/.env.example](backend/.env.example) for every option.
 - **`backend/instance/seed_accounts.json`** — your bank-account registry (gitignored; real account numbers never belong in the repo). Copy [backend/instance/seed_accounts.example.json](backend/instance/seed_accounts.example.json) and fill in your accounts, or add them in the UI under **Configuration**.
-- **Database** — SQLite out of the box (`backend/recon.db`, zero setup). Set `DATABASE_URL` for MySQL/PostgreSQL in production; `backend/migrate_to_mysql.py` helps move existing data.
+- **Database** — SQLite out of the box (`backend/recon.db`, zero setup). Set `DATABASE_URL` for MySQL/PostgreSQL in production (production runs on MySQL); `backend/migrate_to_mysql.py` moves existing data — see the [migration runbook](docs/mysql-migration.md).
 - **Matching rules** — editable per partner in the UI (**Logic Builder**), no code changes needed.
 
 ## Architecture
@@ -122,6 +126,16 @@ backend/   FastAPI + SQLAlchemy
 Deep dives: [docs/architecture.md](docs/architecture.md) · [docs/behavior-contract.md](docs/behavior-contract.md) · [docs/known-issues.md](docs/known-issues.md)
 
 The API is self-documenting: `http://localhost:8000/docs` (Swagger) and `/redoc`.
+
+## Tech Stack
+
+- **Backend** — Python 3.10+, FastAPI, SQLAlchemy 2, APScheduler; pandas / openpyxl / xlrd / pdfplumber (ingestion), python-jose + passlib/bcrypt (auth), reportlab (PDF). SQLite by default; MySQL (PyMySQL) or PostgreSQL in production.
+- **Frontend** — React 18, Vite 5, Tailwind CSS 3, React Router 6, axios, react-hot-toast, lucide-react, date-fns.
+- **Tooling** — pytest, ruff, GitHub Actions CI (lint · tests · build · secret scan), Docker & docker-compose.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for notable changes in each release.
 
 ## Contributing
 
