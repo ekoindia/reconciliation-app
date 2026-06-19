@@ -127,6 +127,7 @@ export default function Mismatches() {
                   <th className="table-th text-right text-green-600">Internal Amt</th>
                   <th className="table-th text-right text-red-500">Delta</th>
                   <th className="table-th">Bank Description</th>
+                  <th className="table-th">Internal CSP</th>
                   {canResolve && <th className="table-th">Action</th>}
                 </tr>
               </thead>
@@ -154,6 +155,14 @@ export default function Mismatches() {
                     </td>
                     <td className="table-td max-w-[16rem]">
                       <span className="text-xs text-gray-500 block truncate" title={row.bank_description || ''}>{row.bank_description || '—'}</span>
+                    </td>
+                    <td className="table-td max-w-[12rem]">
+                      {(row.internal_csp_code || row.internal_csp_name)
+                        ? <span className="block leading-tight text-xs">
+                            <span className="block font-mono text-gray-600 truncate" title={row.internal_csp_code || ''}>{row.internal_csp_code || '—'}</span>
+                            {row.internal_csp_name && <span className="block text-[10px] text-gray-400 truncate" title={row.internal_csp_name}>{row.internal_csp_name}</span>}
+                          </span>
+                        : <span className="text-gray-300">—</span>}
                     </td>
                     {canResolve && (
                       <td className="table-td">

@@ -790,7 +790,8 @@ _UNIVERSAL_STATUS = {
 
 def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=None,
                  recon_status=None, eko_tid=None, tracking_number=None, match_id=None,
-                 amount_min=None, amount_max=None, aging=None, bank_description=None, db=None):
+                 amount_min=None, amount_max=None, aging=None, bank_description=None,
+                 csp_code=None, csp_name=None, db=None):
     """Full filtered list of module rows in the core open-items shape (no pagination).
 
     Honours every Open-Items filter so combinations behave identically to the core
@@ -811,6 +812,8 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
     tid_list = [t.strip().lower() for t in (eko_tid or "").strip('()[]{} ').split(',') if t.strip()]
     trk_list = [t.strip().lower() for t in (tracking_number or "").strip('()[]{} ').split(',') if t.strip()]
     desc_q = (bank_description or "").strip().lower()
+    csp_code_q = (csp_code or "").strip().lower()
+    csp_name_q = (csp_name or "").strip().lower()
 
     # Resolve which concrete module statuses this filter targets (None = no status gate).
     #   match_id lookup → ignore status   |   "all" → everything
@@ -844,6 +847,10 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
                 continue
             if desc_q and desc_q not in str(item.get("bank_description") or "").lower():
                 continue
+            if csp_code_q and csp_code_q not in str(item.get("csp_code") or "").lower():
+                continue
+            if csp_name_q and csp_name_q not in str(item.get("csp_name") or "").lower():
+                continue
             try:
                 amt = float(item.get("amount") or 0)
                 if amount_min is not None and amt < float(amount_min): continue
@@ -869,6 +876,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "match_id": b.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
             "bank_description": None,  # BBPS operator reports carry no free-text narration
+            "csp_code": None, "csp_name": None,  # CSP is on the internal side only
         }, "bank")
         _collect(db.query(BbpsInternal), "transaction_date", lambda i: {
             "id": i.id, "partner": "bbps", "side": "internal", "recon_date": i.transaction_date,
@@ -878,6 +886,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "match_id": i.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
             "bank_description": None,
+            "csp_code": i.csp_code, "csp_name": i.merchant_name,  # CSP already stored
         }, "internal")
     elif module == "evalue":
         from models.database import EvalueBankTxn, EvalueWalletLoad
@@ -889,6 +898,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "match_id": b.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
             "bank_description": b.description,  # E-Value bank txns already store the narration
+            "csp_code": None, "csp_name": None,  # CSP is on the internal side only
         }, "bank")
         _collect(db.query(EvalueWalletLoad), "transaction_date", lambda l: {
             "id": l.id, "partner": "evalue", "side": "internal", "recon_date": l.transaction_date,
@@ -898,6 +908,7 @@ def _module_rows(module, *, recon_date=None, date_from=None, date_to=None, side=
             "match_id": l.match_id, "src_code": None, "src_note": None,
             "assigned_to": None, "exception_reason": None, "row_type": "txn",
             "bank_description": None,
+            "csp_code": l.csp_code, "csp_name": l.merchant_name,  # CSP already stored
         }, "internal")
 
     rows.sort(key=lambda x: str(x.get("recon_date") or ""), reverse=True)
@@ -935,6 +946,8 @@ def get_open_items(
     aging: Optional[str] = None,         # "d1" | "d3" | "d7"
     bank_account: Optional[str] = None,  # filter bank rows by source account number
     bank_description: Optional[str] = None,  # substring search over bank narration
+    csp_code: Optional[str] = None,      # substring search over CSP code (internal rows)
+    csp_name: Optional[str] = None,      # substring search over CSP name (internal rows)
     assigned: Optional[str] = None,      # "me" | "unassigned" | "<username>"
     row_type: Optional[str] = None,
     amount_min:       Optional[float] = None,
@@ -950,7 +963,8 @@ def get_open_items(
                         side=side, recon_status=recon_status, eko_tid=eko_tid,
                         tracking_number=tracking_number, match_id=match_id,
                         amount_min=amount_min, amount_max=amount_max, aging=aging,
-                        bank_description=bank_description)
+                        bank_description=bank_description,
+                        csp_code=csp_code, csp_name=csp_name)
     if partner in _MODULE_OPEN:
         return _module_open_items(partner, db, page, page_size, **_mod_filters)
 
@@ -1000,6 +1014,10 @@ def get_open_items(
     if match_id: q = q.filter(Transaction.match_id.ilike(f"%{match_id}%"))
     if bank_description:
         q = q.filter(Transaction.bank_description.ilike(f"%{bank_description}%"))
+    if csp_code:
+        q = q.filter(Transaction.csp_code.ilike(f"%{csp_code}%"))
+    if csp_name:
+        q = q.filter(Transaction.csp_name.ilike(f"%{csp_name}%"))
 
     # Exception-workflow ownership filter
     if assigned == "me":
@@ -1303,6 +1321,9 @@ def get_mismatches(
             "internal_txn_id":   i.id if i else None,
             "internal_eko_tid":  i.eko_tid if i else "—",
             "internal_amount":   round(int_amt, 2),
+            # CSP (retailer) identity of the internal counterpart (read-only).
+            "internal_csp_code": (getattr(i, "csp_code", None) if i else None),
+            "internal_csp_name": (getattr(i, "csp_name", None) if i else None),
             "delta":             round(bank_amt - int_amt, 2),
         })
 
@@ -1476,6 +1497,9 @@ def _txn_to_dict(t: Transaction) -> dict:
         "bank_account": getattr(t, "bank_account", None),
         # Read-only bank-statement narration (bank side only; NULL for internal).
         "bank_description": (getattr(t, "bank_description", None) if t.side == "bank" else None),
+        # Read-only CSP (retailer) identity (internal side only; NULL for bank).
+        "csp_code": (getattr(t, "csp_code", None) if t.side == "internal" else None),
+        "csp_name": (getattr(t, "csp_name", None) if t.side == "internal" else None),
         "days_open": days_open,
         "aging_bucket": aging_bucket,
     }

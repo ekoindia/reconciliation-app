@@ -47,7 +47,7 @@ const SRC_CODES = [
   'INTERNAL_TXN','DELAYED_TXN','DUPLICATE','MISSING_TID','OTHER'
 ]
 
-const COLS = 16  // checkbox + 14 data cols (incl. Description) + actions
+const COLS = 17  // checkbox + 15 data cols (incl. Description, CSP) + actions
 
 export default function OpenItems() {
   const [searchParams] = useSearchParams()
@@ -69,6 +69,8 @@ export default function OpenItems() {
     amount_max:       '',
     bank_account:     searchParams.get('bank_account') || '',
     bank_description: '',
+    csp_code:         '',
+    csp_name:         '',
   }
 
   // ── All useState hooks FIRST — no hooks after this block ────────────────────
@@ -381,10 +383,22 @@ export default function OpenItems() {
               title="Substring search over the bank statement narration (bank rows only)"
               onChange={e => setFilters({...filters, bank_description: e.target.value})} />
           </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">CSP Code</label>
+            <input className="input" placeholder="CSP code" value={filters.csp_code}
+              title="Substring search over the CSP (retailer) code (internal rows only)"
+              onChange={e => setFilters({...filters, csp_code: e.target.value})} />
+          </div>
+          <div>
+            <label className="text-xs text-gray-400 block mb-1">CSP Name</label>
+            <input className="input" placeholder="CSP name" value={filters.csp_name}
+              title="Substring search over the CSP (retailer) name (internal rows only)"
+              onChange={e => setFilters({...filters, csp_name: e.target.value})} />
+          </div>
         </div>
         <div className="flex gap-2 mt-3">
           <button onClick={() => load(1)} className="btn-primary flex items-center gap-1.5"><Search size={14} /> Search</button>
-          <button onClick={() => setFilters({ partner: '', recon_date: '', date_from: '', date_to: '', side: '', src_code: '', eko_tid: '', tracking_number: '', match_id: '', recon_status: '', aging: '', amount_min: '', amount_max: '', bank_account: '', bank_description: '' })} className="btn-ghost">Clear</button>
+          <button onClick={() => setFilters({ partner: '', recon_date: '', date_from: '', date_to: '', side: '', src_code: '', eko_tid: '', tracking_number: '', match_id: '', recon_status: '', aging: '', amount_min: '', amount_max: '', bank_account: '', bank_description: '', csp_code: '', csp_name: '' })} className="btn-ghost">Clear</button>
         </div>
       </div>
 
@@ -413,6 +427,7 @@ export default function OpenItems() {
                 <th className="table-th">Recon ID</th>
                 <th className="table-th">SRC</th>
                 <th className="table-th">Description</th>
+                <th className="table-th">CSP</th>
                 <th className="table-th">Actions</th>
               </tr>
             </thead>
@@ -479,6 +494,14 @@ export default function OpenItems() {
                     <td className="table-td max-w-xs">
                       {item.side === 'bank' && item.bank_description
                         ? <span className="text-xs text-gray-600 block truncate" title={item.bank_description}>{item.bank_description}</span>
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+                    <td className="table-td max-w-[12rem]">
+                      {item.side === 'internal' && (item.csp_code || item.csp_name)
+                        ? <div className="leading-tight">
+                            <span className="block font-mono text-xs text-gray-700 truncate" title={item.csp_code || ''}>{item.csp_code || '—'}</span>
+                            {item.csp_name && <span className="block text-[10px] text-gray-500 truncate" title={item.csp_name}>{item.csp_name}</span>}
+                          </div>
                         : <span className="text-gray-300">—</span>}
                     </td>
                     <td className="table-td">

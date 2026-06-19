@@ -205,7 +205,7 @@ def _ingest_dataframe_inner(
     from routes.upload import (
         _classify_bank_row, _auto_detect_amount, _parse_description,
         _clean, _safe_float, _parse_recon_date,
-        _extract_bank_account, _register_bank_account, UPLOAD_DIR,
+        _extract_bank_account, _register_bank_account, _extract_csp, UPLOAD_DIR,
     )
     import os as _os
 
@@ -377,6 +377,9 @@ def _ingest_dataframe_inner(
             if net_amount_col:
                 net_amount = _safe_float(str(row_dict.get(net_amount_col, '')).replace(',', ''))
 
+        # CSP (retailer) identity — internal dump only (read-only, additive).
+        _csp_code, _csp_name = _extract_csp(row_dict) if is_internal_side else ("", "")
+
         txns.append(Transaction(
             id=generate_id(),
             upload_session_id=session.id,
@@ -398,6 +401,11 @@ def _ingest_dataframe_inner(
             # Original bank narration for display (bank side only; "" not NULL
             # for no-narration bank rows so startup backfill only hits old rows).
             bank_description=(desc_val or "") if is_bank_side else None,
+            # CSP code + name for display/search — internal side only; bank rows
+            # keep NULL. "" (not NULL) when the dump carries no CSP column, so the
+            # startup backfill only touches pre-existing rows. Read-only.
+            csp_code=(_csp_code if is_internal_side else None),
+            csp_name=(_csp_name if is_internal_side else None),
         ))
 
     db.bulk_save_objects(txns)

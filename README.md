@@ -22,6 +22,7 @@ Built by the finance operations team at Eko Bharat Ventures and battle-tested on
 |---|---|
 | **Multi-format ingestion** | CSV, XLSX/XLS, PDF (auto table extraction), tab-separated text. Auto header detection, format auto-recognition from column signatures, saveable column-mapping templates. |
 | **Bank-statement narration** | The full bank/partner statement description is shown on every bank-side transaction — across the recon workbench, Open Items, and every product module — and in all exports. Searchable, read-only, and backfilled for already-uploaded statements. |
+| **CSP (retailer) tagging** | The CSP code and CSP name from the internal dump are shown on every internal-side transaction — across the recon workbench, Open Items, and every product module — and in all exports. Searchable, read-only, and backfilled for already-uploaded data. |
 | **Wrong-file protection** | FREC (file recognition check) and WLR (wrong-record detection) hard-block files uploaded under the wrong partner/format. Duplicate uploads blocked by slot guard + SHA-256 file hashing. |
 | **Rule-based matching** | Priority-ordered match rules per partner (TID / tracking number / UTR / amount), editable in the UI Logic Builder. Amount tolerance flags `amount_mismatch` instead of silently matching. |
 | **Special passes** | Reversal pairing, NEFT D+1 carry, internal Success+Refund contra, cross-bank interbank transfers, configurable D+N carry-forward. |

@@ -800,6 +800,32 @@ def _clean(val) -> Optional[str]:
     return None if s in NULL_VALUES else s
 
 
+# ── CSP (retailer) identity from the internal dump ───────────────────────────
+# Canonical Eko internal-dump columns are "CSPCode" and "MerchantName" (the
+# E-Value / BBPS engines read the very same). Lookup is case/space/underscore-
+# insensitive and accepts the obvious aliases (CSP Code / CSPID, CSP Name).
+# Read-only and purely additive: these are NEVER used in matching. When the
+# column is absent or empty the value is left blank ("") — never inferred.
+_CSP_CODE_HEADERS = {"cspcode", "cspid"}
+_CSP_NAME_HEADERS = {"merchantname", "cspname"}
+
+def _extract_csp(row_dict: dict) -> tuple:
+    """Return (csp_code, csp_name) for an internal-dump row; blank when absent."""
+    code = name = ""
+    for k, v in row_dict.items():
+        norm = re.sub(r'[^a-z0-9]', '', str(k).lower())
+        if not code and norm in _CSP_CODE_HEADERS:
+            code = _clean(v) or ""
+        elif not name and norm in _CSP_NAME_HEADERS:
+            name = _clean(v) or ""
+        if code and name:
+            break
+    # Guard against a stray pandas 'nan' string leaking into the display field.
+    if code.lower() == "nan": code = ""
+    if name.lower() == "nan": name = ""
+    return code, name
+
+
 def _auto_detect_amount(row: dict, df_columns: list, mapped_amount_col: str, is_bank_side: bool) -> tuple:
     """
     Auto-detect amount and DR/CR indicator from a row.
@@ -1471,6 +1497,9 @@ def confirm_mapping(
         if _net_amount_col:
             net_amount = _safe_float(str(row_dict.get(_net_amount_col, '')).replace(',', ''))
 
+        # ── CSP (retailer) identity — internal dump only (read-only, additive) ─
+        _csp_code, _csp_name = _extract_csp(row_dict) if is_internal_side else ("", "")
+
         txn = Transaction(
             id=generate_id(),
             upload_session_id=session.id,
@@ -1494,6 +1523,12 @@ def confirm_mapping(
             # rows with no narration, so the startup backfill's IS NULL filter
             # only ever touches pre-existing rows. Read-only — not used in matching.
             bank_description=(desc_val or "") if is_bank_side else None,
+            # CSP (retailer) code + name for display/search — internal side only;
+            # bank rows keep NULL. "" (not NULL) when the dump carries no CSP
+            # column, so the startup backfill's IS NULL filter only ever touches
+            # pre-existing rows. Read-only — never used in matching.
+            csp_code=(_csp_code if is_internal_side else None),
+            csp_name=(_csp_name if is_internal_side else None),
         )
         txns.append(txn)
 

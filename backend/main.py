@@ -335,6 +335,51 @@ def _backfill_bank_descriptions():
         db.close()
 
 
+def _backfill_csp_fields():
+    """
+    Populate Transaction.csp_code / csp_name for pre-existing INTERNAL-SIDE rows
+    created before these columns existed (they are filled on ingest going
+    forward). The original dump row was always preserved inside raw_data; this
+    re-derives the CSP identity from it using the EXACT same column lookup as
+    ingestion (_extract_csp → CSPCode / MerchantName, alias-tolerant).
+
+    Bank-side rows are never touched (they must stay NULL → never displayed).
+    Idempotent + batched: only rows where csp_code IS NULL are processed, and
+    every processed row is set to a non-NULL value ("" when the dump carried no
+    CSP column), so it drains to a no-op after the first run.
+    """
+    import json as _json
+    from routes.upload import _extract_csp
+
+    db = SessionLocal()
+    try:
+        total = 0
+        while True:
+            batch = (db.query(Transaction)
+                       .filter(Transaction.side == "internal",
+                               Transaction.csp_code.is_(None))
+                       .limit(1000).all())
+            if not batch:
+                break
+            for t in batch:
+                try:
+                    row = _json.loads(t.raw_data) if t.raw_data else {}
+                except Exception:
+                    row = {}
+                code, name = _extract_csp(row) if isinstance(row, dict) and row else ("", "")
+                t.csp_code = code   # "" marks the row processed (drops out of IS NULL)
+                t.csp_name = name
+            db.commit()
+            total += len(batch)
+        if total:
+            print(f"[startup] Backfilled CSP code/name for {total} internal transaction(s)")
+    except Exception as e:
+        print(f"[startup] csp backfill error: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 @app.on_event("startup")
 def startup():
     """
@@ -352,7 +397,7 @@ def startup():
     # a single hiccup here would otherwise take the whole API down. Each is
     # independent and safe to skip for this boot.
     for _step in (_apply_indexes, _repair_duplicate_match_ids, _backfill_match_ids,
-                  _backfill_bank_descriptions):
+                  _backfill_bank_descriptions, _backfill_csp_fields):
         try:
             _step()
         except Exception as _e:

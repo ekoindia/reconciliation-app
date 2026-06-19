@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.2.0] - 2026-06-19
+
+### Added
+- **CSP (retailer) code & name** surfaced for every internal-side transaction everywhere
+  it appears (recon workbench, Open Items, Mismatches, manual-match, every product
+  module, and all Excel exports). Read from the internal dump's `CSPCode` / `MerchantName`
+  columns, searchable/filterable, read-only, and backfilled for already-uploaded data.
+  Blank when the source has no CSP column. Purely additive — no existing column, label,
+  order, value, or matching behaviour changes.
+
 ## [6.1.0] - 2026-06-15
 
 ### Added

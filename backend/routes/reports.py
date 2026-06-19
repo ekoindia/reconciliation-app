@@ -52,6 +52,8 @@ def export_open_items(
     aging:            Optional[str] = None,
     recon_status:     Optional[str] = None,
     bank_description: Optional[str] = None,   # substring search over bank narration
+    csp_code:         Optional[str] = None,   # substring search over CSP code (internal rows)
+    csp_name:         Optional[str] = None,   # substring search over CSP name (internal rows)
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("reports"))
 ):
@@ -94,6 +96,10 @@ def export_open_items(
     if match_id: q = q.filter(Transaction.match_id.ilike(f"%{match_id}%"))
     if bank_description:
         q = q.filter(Transaction.bank_description.ilike(f"%{bank_description}%"))
+    if csp_code:
+        q = q.filter(Transaction.csp_code.ilike(f"%{csp_code}%"))
+    if csp_name:
+        q = q.filter(Transaction.csp_name.ilike(f"%{csp_name}%"))
 
     # Date: single date takes precedence over range
     if recon_date:
@@ -147,12 +153,16 @@ def export_open_items(
         "Override Note":    getattr(t, "override_note", "") or "",
         # Bank narration (bank side only; internal rows stay blank)
         "Bank Description": (getattr(t, "bank_description", "") or "") if t.side == "bank" else "",
+        # CSP (retailer) identity (internal side only; bank rows stay blank)
+        "CSP Code":         (getattr(t, "csp_code", "") or "") if t.side == "internal" else "",
+        "CSP Name":         (getattr(t, "csp_name", "") or "") if t.side == "internal" else "",
     } for t in txns]
 
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
         "Partner","Side","Recon Date","Transaction Date","Recon Status","Row Type",
         "Eko TID","Tracking Number","UTR Number","Amount","DR/CR","Txn Status",
-        "Match ID","SRC Code","SRC Note","Override By","Override Note","Bank Description"
+        "Match ID","SRC Code","SRC Note","Override By","Override Note","Bank Description",
+        "CSP Code","CSP Name"
     ])
 
     output = io.BytesIO()
@@ -421,6 +431,9 @@ def export_matched_pairs(
             row[f"Internal – {k}"] = v
         # Bank narration (bank side only) — appended last so no existing column moves
         row["Bank – Description"] = getattr(b, "bank_description", "") or ""
+        # CSP (retailer) identity of the internal side — appended last (additive)
+        row["Internal – CSP Code"] = (getattr(internal, "csp_code", "") or "") if internal else ""
+        row["Internal – CSP Name"] = (getattr(internal, "csp_name", "") or "") if internal else ""
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -531,7 +544,7 @@ def export_eod_summary(
     ws2 = wb.create_sheet("Open Items")
     headers2 = ["Side", "Eko TID", "Tracking No", "UTR No", "Amount",
                 "DR/CR", "Txn Date", "Recon Status", "SRC Code", "SRC Note",
-                "Bank Description"]
+                "Bank Description", "CSP Code", "CSP Name"]
     for c, h in enumerate(headers2, 1):
         cell = ws2.cell(1, c, h)
         cell.fill = header_fill
@@ -548,7 +561,9 @@ def export_eod_summary(
         ws2.cell(r, 9, t.src_code or "")
         ws2.cell(r, 10, t.src_note or "")
         ws2.cell(r, 11, (getattr(t, "bank_description", "") or "") if t.side == "bank" else "")
-    for c in range(1, 12):
+        ws2.cell(r, 12, (getattr(t, "csp_code", "") or "") if t.side == "internal" else "")
+        ws2.cell(r, 13, (getattr(t, "csp_name", "") or "") if t.side == "internal" else "")
+    for c in range(1, 14):
         ws2.column_dimensions[get_column_letter(c)].width = 18
 
     # ── Sheet 3: SRC Breakdown ────────────────────────────────────────────────
@@ -728,6 +743,9 @@ def _txn_rows(txns):
         "SRC Note":         t.src_note or "",
         # Bank narration (bank side only; internal rows blank)
         "Bank Description": (getattr(t, "bank_description", "") or "") if t.side == "bank" else "",
+        # CSP (retailer) identity (internal side only; bank rows blank)
+        "CSP Code":         (getattr(t, "csp_code", "") or "") if t.side == "internal" else "",
+        "CSP Name":         (getattr(t, "csp_name", "") or "") if t.side == "internal" else "",
     } for t in txns]
 
 

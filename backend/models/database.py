@@ -279,6 +279,12 @@ class Transaction(Base):
     # matching. Populated on ingest from the mapped description column and
     # backfilled from raw_data for pre-existing rows.
     bank_description = Column(Text, nullable=True)
+    # CSP (retailer) identity carried from the internal dump, INTERNAL SIDE ONLY
+    # (NULL for bank-statement rows). Read-only display/search fields — never used
+    # in matching. Populated on ingest from the dump's CSPCode / MerchantName
+    # columns and backfilled from raw_data for pre-existing rows.
+    csp_code         = Column(String(40),  nullable=True)
+    csp_name         = Column(String(255), nullable=True)
 
     # ── Recon state ───────────────────────────────────────────────────────────
     recon_status     = Column(String(30),  default=ReconStatus.unmatched)
@@ -1267,6 +1273,8 @@ def _run_migrations():
             ("bank_account", "VARCHAR(40)"),
             # Read-only bank-statement narration (bank side only)
             ("bank_description", "TEXT"),
+            # CSP (retailer) identity from the internal dump (internal side only)
+            ("csp_code", "VARCHAR(40)"), ("csp_name", "VARCHAR(255)"),
         ],
         "audit_logs": [("action_type", "VARCHAR(10)"), ("previous_state", "TEXT")],
         "evalue_bank_txns": [
