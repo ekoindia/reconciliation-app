@@ -393,6 +393,14 @@ def startup():
     - start_scheduler()            → start APScheduler; reload saved cron jobs from DB
     """
     init_db()
+    # Additive config/entitlement change auditing (roadmap 1.1): attach the
+    # before_flush listener so admin/auth config changes by a logged-in user are
+    # recorded as AuditLog rows. Actor-less sessions (seeders/scheduler) are skipped.
+    try:
+        from core.config_audit import register as _register_config_audit
+        _register_config_audit(SessionLocal)
+    except Exception as _e:
+        print(f"[startup] config_audit register skipped: {_e}")
     # Index creation and one-off data repairs must NOT be able to crash startup —
     # a single hiccup here would otherwise take the whole API down. Each is
     # independent and safe to skip for this boot.

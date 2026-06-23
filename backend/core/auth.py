@@ -13,6 +13,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
 from models.database import get_db, User, APIKey
+from core.config_audit import set_actor
 
 
 def client_ip(request) -> str:
@@ -175,6 +176,7 @@ def get_current_user(
         creator_copy.__dict__.update(creator.__dict__)
         creator_copy.permissions = api_key.permissions
         creator_copy.full_name   = f"{api_key.name} [API key]"
+        set_actor(db, creator_copy)   # additive: attribute config/entitlement changes to this principal
         return creator_copy
 
     # ── JWT path ──────────────────────────────────────────────────────────────
@@ -196,6 +198,7 @@ def get_current_user(
     user = db.query(User).filter(User.username == username).first()
     if user is None or not user.is_active:
         raise credentials_exception
+    set_actor(db, user)   # additive: attribute config/entitlement changes to this principal
     return user
 
 
