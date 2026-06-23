@@ -464,6 +464,20 @@ def _ingest_dataframe_inner(
                     except Exception:
                         pass
 
+    # ── Same-side duplicate flagging (re-ingested rows) ───────────────────────
+    # Mirrors routes/upload.py (contract #10): flag txn rows that duplicate an
+    # already-present txn on the same (partner, side) as 'duplicate' (overlapping
+    # or repeated uploads). Non-destructive; keeps the matched/first copy.
+    duplicate_results = {}
+    try:
+        from core.matching_engine import flag_same_side_duplicates
+        for p in set(t.partner for t in txns if t.row_type == "txn" and t.partner):
+            dr = flag_same_side_duplicates(p, session.side, db)
+            if dr["duplicates_flagged"] > 0:
+                duplicate_results[f"{p}/{session.side}"] = dr
+    except Exception:
+        pass
+
     # ── Upload history ────────────────────────────────────────────────────────
     display_date = "auto (multi-date)" if is_auto_date else session.recon_date
     txn_count     = len([t for t in txns if t.row_type == "txn"])
@@ -521,4 +535,5 @@ def _ingest_dataframe_inner(
         "auto_recon":              auto_recon_results if is_internal_side else {},
         "neft_d1_auto":            neft_d1_results    if is_internal_side else {},
         "reversal_auto":           reversal_results   if is_bank_side     else {},
+        "duplicate_flagged":       duplicate_results,
     }

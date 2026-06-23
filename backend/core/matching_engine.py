@@ -441,6 +441,12 @@ def run_neft_d1_match(partner: str, recon_date: str, db: Session, user_id: str) 
     ).all()
 
     matched_count = 0
+    # Allocate the sequence ONCE and increment it in memory (mirrors
+    # run_reconciliation). SessionLocal uses autoflush=False, so calling
+    # _next_seq() per match would re-read the same un-flushed MAX(seq) and
+    # reissue ONE duplicate match_id for every pair matched in this run.
+    # Matching itself — UTR-only, behavior-contract #8 — is unchanged.
+    seq = _next_seq(partner, recon_date, db)
     for bank_txn in bank_txns:
         for internal_txn in internal_txns:
             if internal_txn.recon_status == ReconStatus.matched:
@@ -448,8 +454,8 @@ def run_neft_d1_match(partner: str, recon_date: str, db: Session, user_id: str) 
             # Match on UTR + amount
             if (_normalize(bank_txn.utr_number) == _normalize(internal_txn.utr_number)
                     and bank_txn.utr_number):
-                seq = _next_seq(partner, recon_date, db)
                 mid = _make_match_id(partner, recon_date, seq)
+                seq += 1
                 bank_txn.recon_status    = ReconStatus.matched
                 bank_txn.matched_with_id = internal_txn.id
                 bank_txn.match_id        = mid
@@ -461,6 +467,62 @@ def run_neft_d1_match(partner: str, recon_date: str, db: Session, user_id: str) 
 
     db.commit()
     return {"neft_d1_matched": matched_count, "prev_date": prev_date}
+
+
+def flag_same_side_duplicates(partner: str, side: str, db: Session) -> Dict:
+    """
+    Flag re-ingested duplicate rows as 'duplicate' so they drop out of Open Items
+    while remaining in the ledger for audit.
+
+    A duplicate is a row_type=='txn' row that shares its tracking_number with
+    another 'txn' row on the SAME (partner, side) — i.e. the same transaction
+    ingested more than once (overlapping / repeated uploads, or re-upload after a
+    clear wiped the file-hash guard). Keeps exactly ONE row per tracking_number —
+    the matched copy if any, else an operator-actioned copy, else the
+    lexicographically-first id — and flags only the still-'unmatched' extras.
+
+    Deliberately scoped, to never reclassify legitimate rows:
+      * row_type == 'txn' ONLY — reversals / fee rows legitimately share the
+        original's tracking number (behaviour-contract #18) and are left untouched.
+      * flags ONLY rows still in the default 'unmatched' state — never a matched
+        row, and never one an operator has already actioned (src_assigned,
+        human_override, failed, duplicate, …).
+
+    Non-destructive and idempotent.
+    """
+    from collections import defaultdict
+    rows = db.query(Transaction).filter(
+        Transaction.partner == partner,
+        Transaction.side == side,
+        Transaction.row_type == "txn",
+        Transaction.tracking_number.isnot(None),
+        Transaction.tracking_number != "",
+    ).all()
+
+    groups = defaultdict(list)
+    for r in rows:
+        groups[r.tracking_number].append(r)
+
+    flagged = 0
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        # Choose the survivor: matched wins, then any operator-actioned row,
+        # then the deterministic lexicographically-first id.
+        keeper = next((g for g in grp if g.recon_status == ReconStatus.matched), None)
+        if keeper is None:
+            keeper = next((g for g in grp if g.recon_status not in
+                           (ReconStatus.unmatched, ReconStatus.duplicate)), None)
+        if keeper is None:
+            keeper = sorted(grp, key=lambda g: g.id)[0]
+        for g in grp:
+            if g.id != keeper.id and g.recon_status == ReconStatus.unmatched:
+                g.recon_status = ReconStatus.duplicate
+                flagged += 1
+
+    if flagged:
+        db.commit()
+    return {"duplicates_flagged": flagged}
 
 
 def run_reversal_match(partner: str, recon_date: str, db: Session, user_id: str) -> Dict:

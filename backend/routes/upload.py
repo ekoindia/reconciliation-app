@@ -1626,6 +1626,21 @@ def confirm_mapping(
                 except Exception as _e:
                     logger.warning(f"routes/upload.py: {_e}")  # internal-match errors don't block the upload response
 
+    # ── Same-side duplicate flagging (re-ingested rows) ──────────────────────────
+    # Overlapping/repeated uploads — or a re-upload after a clear wiped the
+    # file-hash guard — re-insert the same transaction. Flag those redundant copies
+    # as 'duplicate' so they drop out of Open Items; the matched/first copy is kept.
+    # txn rows only — reversals legitimately share tracking numbers (contract #18).
+    duplicate_results = {}
+    try:
+        from core.matching_engine import flag_same_side_duplicates
+        for p in set(t.partner for t in txns if t.row_type == "txn" and t.partner):
+            dr = flag_same_side_duplicates(p, session.side, db)
+            if dr["duplicates_flagged"] > 0:
+                duplicate_results[f"{p}/{session.side}"] = dr
+    except Exception as _e:
+        logger.warning(f"routes/upload.py: {_e}")  # dedup errors don't block the upload response
+
     if save_template and template_name:
         existing = db.query(ColumnMappingTemplate).filter(
             ColumnMappingTemplate.partner == session.partner,
@@ -1727,6 +1742,8 @@ def confirm_mapping(
         "auto_recon": auto_recon_results if is_internal_side else {},
         "neft_d1_auto": neft_d1_results if is_internal_side else {},
         "reversal_auto": reversal_results if is_bank_side else {},
+        # Re-ingested rows flagged as 'duplicate' (per partner/side), if any
+        "duplicate_flagged": duplicate_results,
         # AS=SD integrity warnings (non-blocking)
         "integrity_warnings": integrity_warnings,
         # SEV notice when settlement bank not yet configured
@@ -2014,13 +2031,32 @@ def _parse_recon_date(date_str: str) -> Optional[str]:
     """
     Parse a date string from a transaction row and return YYYY-MM-DD.
     Handles common formats: 2026-04-15, 15-04-2026, 15/04/2026,
-    '2026-04-15 06:06:36' (timestamp), etc.
-    Returns None if parsing fails.
+    '2026-04-15 06:06:36' (timestamp), '18 Jun 2026 11:59 PM' (QR Paypoint
+    ExportTransactionList export), etc. Returns None if parsing fails.
     """
     if not date_str:
         return None
-    # Strip time component if present
-    date_str = date_str.strip().split(" ")[0].split("T")[0]
+    import datetime as dt
+    s = date_str.strip()
+    # Formats whose DATE TEXT itself contains spaces (e.g. the QR Paypoint
+    # "ExportTransactionList" export's "18 Jun 2026 11:59 PM") must be matched
+    # against the full string BEFORE any time-stripping: splitting on the first
+    # space would wrongly truncate the day off the month/year and yield NULL.
+    full_formats = [
+        "%d %b %Y %I:%M %p",   # 18 Jun 2026 11:59 PM
+        "%d %b %Y %H:%M:%S",   # 18 Jun 2026 23:59:00
+        "%d %b %Y %H:%M",      # 18 Jun 2026 23:59
+        "%d %b %Y",            # 18 Jun 2026
+        "%d-%b-%Y %I:%M %p",   # 18-Jun-2026 11:59 PM
+    ]
+    for fmt in full_formats:
+        try:
+            return dt.datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    # Date text has no internal spaces — strip any trailing time component and
+    # match the date-only formats (unchanged from the original behaviour).
+    date_only = s.split(" ")[0].split("T")[0]
     formats = [
         "%Y-%m-%d",   # 2026-04-15
         "%d-%m-%Y",   # 15-04-2026
@@ -2030,10 +2066,9 @@ def _parse_recon_date(date_str: str) -> Optional[str]:
         "%d-%b-%Y",   # 15-Apr-2026
         "%d %b %Y",   # 15 Apr 2026
     ]
-    import datetime as dt
     for fmt in formats:
         try:
-            return dt.datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+            return dt.datetime.strptime(date_only, fmt).strftime("%Y-%m-%d")
         except ValueError:
             continue
     return None

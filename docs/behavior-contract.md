@@ -19,8 +19,11 @@ Reviewers: cite this file by item number.
    before fee-charge detection (a reversed fee would otherwise auto-close as
    `fee_matched`). The DR/CR heuristics decide which rows enter recon at all.
 4. **Post-ingest pass order** — reversal → auto-recon (counterpart-gated) → NEFT D+1 →
-   internal self-match. `/clear` cascades counterpart resets then re-runs recon. Order
-   changes silently change final ledger statuses.
+   internal self-match → same-side duplicate flagging. `/clear` cascades counterpart
+   resets then re-runs recon. Order changes silently change final ledger statuses. The
+   duplicate-flag pass (`flag_same_side_duplicates`) runs LAST, in both ingest copies,
+   and only re-labels still-`unmatched` `txn`-row re-ingestions (same partner/side/
+   tracking) as `duplicate` — never a matched, operator-actioned, or reversal/fee row.
 5. **`_normalize` float canonicalization** (`core/matching_engine.py`) — `700.0 → '700'`,
    else 2-decimal string. Amount-keyed rules (PG, Digikhata) depend on this exact string.
 6. **`_build_key` returns None when ANY field is empty** — this is what lets fallback
