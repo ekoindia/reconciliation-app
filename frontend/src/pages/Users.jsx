@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, ShieldCheck, User as UserIcon, X } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { createPortal } from 'react-dom'
 import api from '../utils/api'
 import { PRODUCTS } from '../productRegistry'
 
@@ -30,9 +31,10 @@ const PERM_GROUPS = [
     ]
   },
   {
-    label: 'Reporting',
+    label: 'Reporting & Oversight',
     perms: [
       { key: 'reports',       label: 'Reports',                    desc: 'View and export all reports' },
+      { key: 'audit_read',    label: 'Audit Log',                  desc: 'View and export the activity / audit log' },
     ]
   },
 ]
@@ -41,7 +43,7 @@ const PERM_GROUPS = [
 const PERMS = PERM_GROUPS.flatMap(g => g.perms.map(p => p.key))
 const PERM_LABELS = Object.fromEntries(PERM_GROUPS.flatMap(g => g.perms.map(p => [p.key, p.label])))
 
-const DEFAULT_PERMS = { upload: true, run_recon: true, src_assign: true, reports: true, logic_builder: false, override: false, manual_match: true, clear_data: false, approver: false }
+const DEFAULT_PERMS = { upload: true, run_recon: true, src_assign: true, reports: true, logic_builder: false, override: false, manual_match: true, clear_data: false, approver: false, audit_read: false }
 
 export default function Users() {
   const [users, setUsers] = useState([])
@@ -162,98 +164,116 @@ export default function Users() {
         </table>
       </div>
 
-      {/* Modal */}
-      {modal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="font-semibold text-gray-800">{modal === 'create' ? 'Create User' : `Edit: ${modal.username}`}</h3>
-              <button onClick={() => setModal(null)} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+      {/* Modal — portaled to <body> so the page wrapper's persistent transform
+          (animate-fade-in) can't turn position:fixed into a clipped, content-area box */}
+      {modal && createPortal((
+        <div className="fixed inset-0 bg-black/50 z-50 overflow-y-auto">
+          <div className="min-h-full flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl my-4">
+            {/* Header */}
+            <div className="border-b border-gray-100 px-6 py-4 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-gray-800 text-base">{modal === 'create' ? 'Create User' : 'Edit User'}</h3>
+                {modal !== 'create' && <p className="text-xs text-gray-400 mt-0.5">@{modal.username}</p>}
+              </div>
+              <button onClick={() => setModal(null)} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100"><X size={18} /></button>
             </div>
-            <div className="space-y-3">
-              {modal === 'create' && (
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Username</label>
-                  <input className="input" value={form.username} onChange={e => setForm({...form, username: e.target.value})} />
-                </div>
-              )}
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Full Name</label>
-                <input className="input" value={form.full_name} onChange={e => setForm({...form, full_name: e.target.value})} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">Email</label>
-                <input className="input" type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500 block mb-1">{modal === 'create' ? 'Password' : 'New Password (leave blank to keep)'}</label>
-                <input className="input" type="password" value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
-              </div>
-              {modal === 'create' && (
-                <div>
-                  <label className="text-xs text-gray-500 block mb-1">Role</label>
-                  <select className="select" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
-                    <option value="user">User</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                </div>
-              )}
-              {(modal === 'create' ? form.role === 'user' : modal.role === 'user') && (
-                <div>
-                  <label className="text-xs font-semibold text-gray-600 block mb-2">Permissions</label>
-                  <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-                    {PERM_GROUPS.map(group => (
-                      <div key={group.label}>
-                        <div className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1.5 border-b border-gray-100 pb-0.5">
-                          {group.label}
-                        </div>
-                        <div className="space-y-1.5 pl-1">
-                          {group.perms.map(({ key, label, desc }) => (
-                            <label key={key} className="flex items-start gap-2 cursor-pointer">
-                              <input type="checkbox" className="mt-0.5"
-                                checked={!!form.permissions[key]} onChange={() => togglePerm(key)} />
-                              <div>
-                                <div className="text-sm text-gray-700">{label}</div>
-                                <div className="text-xs text-gray-400">{desc}</div>
-                              </div>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
 
-              {/* Product access — which reconciliations this user can work on */}
-              {(modal === 'create' ? form.role === 'user' : modal.role === 'user') && (
-                <div>
-                  <label className="text-xs font-semibold text-gray-600 block mb-1">Product access</label>
-                  <p className="text-[11px] text-gray-400 mb-2">
-                    Tick the products this user reconciles. <strong>None ticked = access to all products.</strong>
-                  </p>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {PRODUCTS.map(p => (
-                      <label key={p.id} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700">
-                        <input type="checkbox"
-                          checked={form.allowed_products.includes(p.id)}
-                          onChange={() => toggleProduct(p.id)} />
-                        <span>{p.icon} {p.label}</span>
-                      </label>
-                    ))}
+            {/* Body */}
+            <div className="px-6 py-5 space-y-6">
+              {/* Account details */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {modal === 'create' && (
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 block mb-1">Username</label>
+                    <input className="input" value={form.username} onChange={e => setForm({...form, username: e.target.value})} />
                   </div>
+                )}
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Full Name</label>
+                  <input className="input" value={form.full_name} onChange={e => setForm({...form, full_name: e.target.value})} />
                 </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">Email</label>
+                  <input className="input" type="email" value={form.email} onChange={e => setForm({...form, email: e.target.value})} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-gray-600 block mb-1">{modal === 'create' ? 'Password' : 'New Password'}</label>
+                  <input className="input" type="password" placeholder={modal === 'create' ? '' : 'Leave blank to keep'} value={form.password} onChange={e => setForm({...form, password: e.target.value})} />
+                </div>
+                {modal === 'create' && (
+                  <div>
+                    <label className="text-xs font-medium text-gray-600 block mb-1">Role</label>
+                    <select className="select" value={form.role} onChange={e => setForm({...form, role: e.target.value})}>
+                      <option value="user">User</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              {(modal === 'create' ? form.role === 'user' : modal.role === 'user') ? (
+                <>
+                  {/* Permissions */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-semibold text-gray-700">Permissions</h4>
+                      <span className="text-[11px] text-gray-400">Admins have all permissions automatically</span>
+                    </div>
+                    <div className="space-y-3">
+                      {PERM_GROUPS.map(group => (
+                        <div key={group.label} className="rounded-lg border border-gray-200 overflow-hidden">
+                          <div className="bg-gray-50 px-3 py-1.5 text-[11px] font-semibold text-gray-500 uppercase tracking-wide border-b border-gray-100">
+                            {group.label}
+                          </div>
+                          <div className="divide-y divide-gray-50">
+                            {group.perms.map(({ key, label, desc }) => (
+                              <label key={key} className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50/70 transition-colors">
+                                <input type="checkbox" className="mt-0.5 w-4 h-4 rounded accent-primary cursor-pointer shrink-0"
+                                  checked={!!form.permissions[key]} onChange={() => togglePerm(key)} />
+                                <div className="min-w-0">
+                                  <div className="text-sm text-gray-700 font-medium leading-tight">{label}</div>
+                                  <div className="text-xs text-gray-400 mt-0.5">{desc}</div>
+                                </div>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Product access — which reconciliations this user can work on */}
+                  <div>
+                    <h4 className="text-sm font-semibold text-gray-700 mb-1">Product access</h4>
+                    <p className="text-[11px] text-gray-400 mb-2">Tick the products this user reconciles. <strong className="font-semibold text-gray-500">None ticked = access to all products.</strong></p>
+                    <div className="grid grid-cols-2 gap-1 rounded-lg border border-gray-200 p-2">
+                      {PRODUCTS.map(p => (
+                        <label key={p.id} className="flex items-center gap-2 cursor-pointer text-sm text-gray-700 px-2 py-1.5 rounded hover:bg-gray-50">
+                          <input type="checkbox" className="w-4 h-4 rounded accent-primary cursor-pointer shrink-0"
+                            checked={form.allowed_products.includes(p.id)} onChange={() => toggleProduct(p.id)} />
+                          <span className="truncate">{p.icon} {p.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2.5 border border-gray-100">
+                  Admin users have full access to every screen and permission — there's nothing to configure here.
+                </p>
               )}
             </div>
-            <div className="flex gap-3 mt-5">
+
+            {/* Footer */}
+            <div className="border-t border-gray-100 bg-gray-50/50 px-6 py-4 flex gap-3">
               <button onClick={() => setModal(null)} className="btn-ghost flex-1">Cancel</button>
-              <button onClick={handleSave} className="btn-primary flex-1">
-                {modal === 'create' ? 'Create User' : 'Save Changes'}
-              </button>
+              <button onClick={handleSave} className="btn-primary flex-1">{modal === 'create' ? 'Create User' : 'Save Changes'}</button>
             </div>
           </div>
+          </div>
         </div>
-      )}
+      ), document.body)}
     </div>
   )
 }
