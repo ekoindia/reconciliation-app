@@ -414,6 +414,9 @@ def startup():
     db = SessionLocal()
     try:
         seed_admin(db)
+        # roadmap 1.2: one-time grandfather of existing users' audit_read perm
+        from models.database import seed_audit_read_grandfather
+        seed_audit_read_grandfather(db)
         from models.database import (
             seed_watch_folder_configs, seed_partner_configs,
             seed_bank_format_presets, seed_match_rules

@@ -1335,6 +1335,37 @@ def init_db():
     _run_migrations()
 
 
+def seed_audit_read_grandfather(db):
+    """One-time grandfather for roadmap item 1.2 (admin-gate audit READ).
+
+    The /api/audit read endpoints are moving behind the ``audit_read``
+    permission. To avoid 403-ing anyone who has open access TODAY, grant
+    ``audit_read: true`` to every user that already exists the first time this
+    runs. Users (and API keys) created afterwards get the app defaults, which do
+    NOT include ``audit_read`` — that is the actual lock-down. Admins
+    short-circuit in ``require_permission()`` and don't strictly need the flag.
+
+    Guarded by a ``SystemSetting`` marker so it runs EXACTLY ONCE per database:
+    it must never re-grant the permission to users created later, nor undo an
+    admin who later revokes it. Runs in the actor-less startup session, so the
+    config-audit listener (item 1.1) does not record these grants.
+    """
+    import json as _json
+    MARKER = "audit_read_grandfathered_v1"
+    if db.query(SystemSetting).filter(SystemSetting.key == MARKER).first():
+        return  # already applied on this database
+    for u in db.query(User).all():
+        try:
+            perms = _json.loads(u.permissions or "{}")
+        except Exception:
+            perms = {}
+        if "audit_read" not in perms:
+            perms["audit_read"] = True
+            u.permissions = _json.dumps(perms)
+    db.add(SystemSetting(key=MARKER, value="done", updated_by="system"))
+    db.commit()
+
+
 def seed_partner_configs(db):
     """
     Seed default PartnerConfig rows for all known partners.

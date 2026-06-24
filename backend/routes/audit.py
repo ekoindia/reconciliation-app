@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import Optional
 from models.database import get_db, AuditLog, User
-from core.auth import get_current_user
+from core.auth import require_permission
 
 import datetime as _dt
 _IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
@@ -77,7 +77,7 @@ def list_audit_logs(
     page:        int = Query(1, ge=1),
     page_size:   int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("audit_read")),
 ):
     q = db.query(AuditLog)
 
@@ -125,7 +125,7 @@ def list_audit_logs(
 @router.get("/actions")
 def list_action_types(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("audit_read")),
 ):
     """Distinct action names in the log — for the filter dropdown."""
     rows = db.query(AuditLog.action).distinct().all()
@@ -139,7 +139,7 @@ def export_audit_logs(
     from_date:   Optional[str] = None,
     to_date:     Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("audit_read")),
 ):
     """Export audit log to Excel — same filters as /logs."""
     import io, pandas as pd

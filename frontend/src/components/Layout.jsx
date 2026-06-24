@@ -22,7 +22,7 @@ const navItems = [
   // product cards in Upload Files — intentionally NOT in the sidebar to keep it clean.
   { to: '/workflow',     icon: Scale,           label: 'Workflow' },
   { to: '/insights',     icon: TrendingUp,      label: 'Insights' },
-  { to: '/audit-log',    icon: Shield,          label: 'Audit Log' },
+  { to: '/audit-log',    icon: Shield,          label: 'Audit Log',     requiredPerm: 'audit_read' },
   { to: '/users',        icon: Users,           label: 'Users',         adminOnly: true },
   { to: '/admin',        icon: Settings,        label: 'Configuration', adminOnly: true },
 ]
