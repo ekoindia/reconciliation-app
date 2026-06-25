@@ -31,6 +31,7 @@ from typing import Optional, List
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -1020,6 +1021,89 @@ def get_p04_results(
         summary[r.action_required] = summary.get(r.action_required, 0) + 1
     data = [{k: getattr(r, k) for k in ('id','csp_code','failed_amount','closing_balance','expected_balance','difference','action_required','action_amount','action_done','notes','recon_date')} for r in rows]
     return {"rows": data, "summary": summary, "count": len(data)}
+
+
+# ── Export ─────────────────────────────────────────────────────────────────────
+# Each SBI process reconciles in its OWN result table (NOT the core `transactions`
+# ledger), so the generic /api/reports exports return blank for partner=kiosk. These
+# export the real recon results, with the operator-facing names the team uses.
+#   p01 = "Bank vs Settlement"   p02 = "Bank vs Transaction"
+#   p03 = "CSP-Txn-Bank"         p04 = "Wallet Balance"
+_SBI_EXPORTS = {
+    "p01": ("Bank vs Settlement", SBIP01Result, "ko_id",
+            ['recon_date', 'ko_id', 'wallet_withdrawn', 'bank_settled', 'difference',
+             'status', 'deduct_date', 'bank_txn_date', 'notes']),
+    "p02": ("Bank vs Transaction", SBIP02Result, "reference_number",
+            ['recon_date', 'reference_number', 'ko_id', 'bank_amount', 'bank_type',
+             'report_amount', 'report_txn_type', 'match_status', 'reversal_type',
+             'success_status', 'notes']),
+    "p03": ("CSP-Txn-Bank", SBIP03Result, "csp_code",
+            ['recon_date', 'csp_code', 'mode', 'ref_number', 'txn_amount', 'txn_date',
+             'bank_credit_date', 'bank_amount', 'match_status', 'date_shift',
+             'match_priority', 'notes']),
+    "p04": ("Wallet Balance", SBIP04Result, "csp_code",
+            ['recon_date', 'csp_code', 'failed_amount', 'closing_balance',
+             'expected_balance', 'difference', 'action_required', 'action_amount',
+             'action_done', 'notes']),
+}
+
+
+def _build_sbi_export(db, which, recon_date=None, match_status=None) -> io.BytesIO:
+    """Build a styled multi-sheet SBI recon workbook; one sheet per process in `which`.
+    Always writes a header row (a valid file even with zero data rows)."""
+    from openpyxl.styles import PatternFill, Font as XFont
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for p in which:
+            sheet, model, order_col, cols = _SBI_EXPORTS[p]
+            q = db.query(model)
+            if recon_date:
+                q = q.filter(model.recon_date == recon_date)
+            # match_status only applies to the processes that have that column (p02/p03)
+            if match_status and hasattr(model, "match_status"):
+                q = q.filter(model.match_status == match_status)
+            rows = q.order_by(getattr(model, order_col)).all()
+            df = pd.DataFrame([{c: getattr(r, c) for c in cols} for r in rows], columns=cols)
+            df.to_excel(writer, sheet_name=sheet[:31], index=False)
+            ws = writer.sheets[sheet[:31]]
+            fill = PatternFill("solid", fgColor="094053")
+            for cell in ws[1]:
+                cell.fill = fill
+                cell.font = XFont(color="FFFFFF", bold=True)
+            for i, c in enumerate(cols, 1):
+                ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = max(12, min(42, len(str(c)) + 4))
+    output.seek(0)
+    return output
+
+
+@router.get("/export")
+def export_sbi(
+    process: str = Query("all", description="p01 | p02 | p03 | p04 | all"),
+    recon_date: Optional[str] = None,
+    match_status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Export SBI Kiosk recon results to a styled Excel workbook.
+
+    `process=all` → one workbook with one sheet per process (Bank vs Settlement,
+    Bank vs Transaction, CSP-Txn-Bank, Wallet Balance). A specific process → a
+    single-sheet file. Always returns a valid file (header row even when empty) —
+    this replaces the old core-ledger export that came back blank because SBI
+    reconciles in its own tables.
+    """
+    process = (process or "all").lower()
+    which = list(_SBI_EXPORTS) if process == "all" else [process]
+    if any(p not in _SBI_EXPORTS for p in which):
+        raise HTTPException(status_code=400, detail="process must be one of p01, p02, p03, p04, all")
+    output = _build_sbi_export(db, which, recon_date, match_status)
+    fname = f"sbi_{process}_{recon_date or 'all'}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
 
 
 @router.get("/summary")

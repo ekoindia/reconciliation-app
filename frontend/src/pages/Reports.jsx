@@ -620,65 +620,42 @@ export default function Reports() {
             </div>
           </div>
 
-          {/* Kiosk Open Items */}
+          {/* SBI Kiosk reconciles in its OWN result tables (P01–P04), not the core
+              transactions ledger — so the old generic ?partner=kiosk exports came back
+              blank. These export the real recon results, by process. */}
           <div className="card">
-            <h2 className="font-semibold text-gray-700 mb-1">Kiosk Open Items</h2>
-            <p className="text-xs text-gray-400 mb-3">Unmatched / SRC-assigned transactions for SBI Kiosk partner</p>
+            <h2 className="font-semibold text-gray-700 mb-1">SBI Kiosk Recon Exports</h2>
+            <p className="text-xs text-gray-400 mb-3">
+              Each process exports its real reconciliation results. Uses <strong>To Date</strong> as the
+              recon date when set; otherwise exports all dates.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {[
+                { p: 'p01', label: 'Bank vs Settlement (P01)',  file: 'sbi_bank_vs_settlement' },
+                { p: 'p02', label: 'Bank vs Transaction (P02)', file: 'sbi_bank_vs_transaction' },
+                { p: 'p03', label: 'CSP · Txn · Bank (P03)',    file: 'sbi_csp_txn_bank' },
+                { p: 'p04', label: 'Wallet Balance (P04)',      file: 'sbi_wallet_balance' },
+              ].map(({ p, label, file }) => (
+                <button key={p} onClick={() => {
+                  const params = new URLSearchParams({ process: p })
+                  if (filters.to_date) params.append('recon_date', filters.to_date)
+                  api.get(`/sbi/export?${params}`, { responseType: 'blob' })
+                    .then(r => _download(r.data, `${file}${filters.to_date ? '_' + filters.to_date : ''}.xlsx`))
+                    .catch(() => toast.error('Export failed'))
+                }} className="btn-ghost flex items-center gap-2 justify-start">
+                  <Download size={14} /> {label}
+                </button>
+              ))}
+            </div>
             <button onClick={() => {
-              const params = new URLSearchParams({ partner: 'kiosk' })
-              if (filters.from_date) params.append('from_date', filters.from_date)
-              if (filters.to_date)   params.append('to_date',   filters.to_date)
-              if (filters.side)      params.append('side',      filters.side)
-              api.get(`/reports/open-items/export?${params}`, { responseType: 'blob' })
-                .then(r => _download(r.data, `kiosk_open_items.xlsx`))
+              const params = new URLSearchParams({ process: 'all' })
+              if (filters.to_date) params.append('recon_date', filters.to_date)
+              api.get(`/sbi/export?${params}`, { responseType: 'blob' })
+                .then(r => _download(r.data, `sbi_all_processes${filters.to_date ? '_' + filters.to_date : ''}.xlsx`))
                 .catch(() => toast.error('Export failed'))
-            }} className="btn-primary flex items-center gap-2"><Download size={14} /> Download Kiosk Open Items</button>
-          </div>
-
-          {/* Kiosk Summary */}
-          <div className="card">
-            <h2 className="font-semibold text-gray-700 mb-1">Kiosk Recon Summary</h2>
-            <p className="text-xs text-gray-400 mb-3">Date-wise match/open counts and amounts for SBI Kiosk</p>
-            <button onClick={() => {
-              const params = new URLSearchParams({ partner: 'kiosk' })
-              if (filters.from_date) params.append('from_date', filters.from_date)
-              if (filters.to_date)   params.append('to_date',   filters.to_date)
-              api.get(`/reports/summary/export?${params}`, { responseType: 'blob' })
-                .then(r => _download(r.data, `kiosk_summary.xlsx`))
-                .catch(() => toast.error('Export failed'))
-            }} className="btn-primary flex items-center gap-2"><Download size={14} /> Download Kiosk Summary</button>
-          </div>
-
-          {/* Kiosk EOD */}
-          <div className="card">
-            <h2 className="font-semibold text-gray-700 mb-1">Kiosk EOD Report</h2>
-            <p className="text-xs text-gray-400 mb-3">3-sheet EOD: headline numbers, open items, SRC breakdown. Uses <strong>To Date</strong> as EOD date.</p>
-            <button
-              disabled={!filters.to_date}
-              onClick={() => {
-                const params = new URLSearchParams({ partner: 'kiosk', recon_date: filters.to_date })
-                api.get(`/reports/eod-summary?${params}`, { responseType: 'blob' })
-                  .then(r => _download(r.data, `kiosk_eod_${filters.to_date}.xlsx`))
-                  .catch(() => toast.error('Export failed'))
-              }}
-              className="btn-primary flex items-center gap-2 disabled:opacity-50">
-              <Download size={14} /> Download Kiosk EOD Report
+            }} className="btn-primary flex items-center gap-2 mt-3">
+              <Download size={14} /> Download All Processes (multi-sheet)
             </button>
-            {!filters.to_date && <p className="text-xs text-gray-400 mt-1">Set a To Date to enable this export</p>}
-          </div>
-
-          {/* Kiosk Matched Pairs */}
-          <div className="card">
-            <h2 className="font-semibold text-gray-700 mb-1">Kiosk Matched Pairs</h2>
-            <p className="text-xs text-gray-400 mb-3">Bank ↔ internal row pairs for all matched Kiosk transactions</p>
-            <button onClick={() => {
-              const params = new URLSearchParams({ partner: 'kiosk' })
-              if (filters.from_date) params.append('from_date', filters.from_date)
-              if (filters.to_date)   params.append('to_date',   filters.to_date)
-              api.get(`/reports/matched-pairs/export?${params}`, { responseType: 'blob' })
-                .then(r => _download(r.data, `kiosk_matched_pairs.xlsx`))
-                .catch(() => toast.error('Export failed'))
-            }} className="btn-primary flex items-center gap-2"><Download size={14} /> Download Matched Pairs</button>
           </div>
         </div>
       )}
