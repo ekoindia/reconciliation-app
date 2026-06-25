@@ -23,6 +23,12 @@ const SEV = {
   unknown:  { cls: 'bg-gray-50 text-gray-600 border-gray-200',     dot: 'bg-gray-400',   label: 'Unknown' },
 }
 
+const SRC_STATUS = {
+  delivered: { cls: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500' },
+  stale:     { cls: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500' },
+  never:     { cls: 'bg-red-50 text-red-700 border-red-200',       dot: 'bg-red-500' },
+}
+
 const fmtBytes = (n) => {
   if (n == null) return '—'
   if (n < 1024) return `${n} B`
@@ -37,6 +43,7 @@ export default function IngestionMonitor() {
   const [loading, setLoading] = useState(false)
   const [summary, setSummary] = useState(null)
   const [health, setHealth] = useState(null)
+  const [sources, setSources] = useState(null)
 
   const [filters, setFilters] = useState({
     channel: '', status: '', partner: '', from_date: '', to_date: '',
@@ -56,6 +63,7 @@ export default function IngestionMonitor() {
   useEffect(() => {
     api.get('/ingestion/summary', { params: { days: 7 } }).then(r => setSummary(r.data)).catch(() => {})
     api.get('/ingestion/health', { params: { days: 7 } }).then(r => setHealth(r.data)).catch(() => {})
+    api.get('/ingestion/sources').then(r => setSources(r.data)).catch(() => {})
   }, [])
 
   return (
@@ -89,6 +97,40 @@ export default function IngestionMonitor() {
                 {c.label}: {c.message}
               </span>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ingestion sources — delivery status (1.5) */}
+      {sources && sources.sources.length > 0 && (
+        <div className="card mb-5">
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="font-semibold text-sm">Ingestion sources — delivery status</span>
+            <span className="text-xs text-gray-400">as of {sources.as_of_ist} (IST)</span>
+            <span className="text-xs ml-auto flex gap-3">
+              <span className="text-green-700">{sources.summary.delivered_today} delivered today</span>
+              <span className="text-amber-700">{sources.summary.stale} stale</span>
+              <span className="text-red-700">{sources.summary.never} never</span>
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {sources.sources.map(s => {
+              const st = SRC_STATUS[s.status] || SRC_STATUS.never
+              return (
+                <div key={`${s.partner}/${s.side}`}
+                     className={`flex items-center gap-2 text-xs px-2.5 py-2 rounded border ${st.cls}`}>
+                  <span className={`inline-block w-2 h-2 rounded-full ${st.dot}`} />
+                  <span className="font-medium">{s.label}</span>
+                  <span className="text-gray-400">/ {s.side}</span>
+                  {s.has_auto && <span className="text-[10px] px-1 rounded bg-purple-100 text-purple-700">auto</span>}
+                  <span className="ml-auto">
+                    {s.status === 'delivered' ? 'today'
+                      : s.status === 'stale' ? `${s.days_since}d ago`
+                      : 'never'}
+                  </span>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}

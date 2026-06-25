@@ -116,6 +116,16 @@ def summary(
             "rows_accepted": rows_accepted, "rows_skipped": rows_skipped}
 
 
+@router.get("/sources")
+def ingestion_sources(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("upload")),
+):
+    """Read-only ingestion-sources catalog (1.5) — who delivered today vs stale."""
+    from core.ingestion_sources import compute_sources
+    return compute_sources(db)
+
+
 @router.get("/health")
 def recon_health(
     days: int = Query(7, ge=1, le=90),
