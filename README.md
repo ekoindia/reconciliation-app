@@ -29,7 +29,9 @@ Built by the finance operations team at Eko Bharat Ventures and battle-tested on
 | **Product modules** | DMT (multi-partner), AePS settlement (T+ formula verification), PG net-settlement, QR settlement + chargebacks, wallet-load reconciliation across 8 banks (E-Value), BBPS refund lifecycle, SBI Kiosk P01–P04. |
 | **Exception workflow** | Universal Open Items window across all modules, bulk SRC assignment, manual match, override with mandatory remarks, maker-checker approval queue, adhoc tagging. |
 | **Reporting** | Summary, bank reconciliation statement, ageing, SRC analysis, matched-pairs export, EOD digest email, per-user scheduled report subscriptions, monthly reconciliation certificate PDF. |
-| **Audit & access control** | Append-only audit log with before/after states, JWT + API-key auth (with IP allowlists), per-module permissions, per-product data scoping, session logging. |
+| **Audit & access control** | Append-only audit log with before/after states, JWT + API-key auth (with IP allowlists), per-module permissions, per-product data scoping, session logging. **Config & entitlement changes are audited** (partner/rule/account/user/key edits write a before-snapshot); audit-log read is permission-gated. |
+| **Ingestion observability** | An append-only **ingestion event ledger** (file fingerprint, row counts, WLR/FREC outcome, duration) feeding an **Ingestion Monitor**, a **data-quality profiler** (blank/parse/duplicate-key rates with non-blocking warnings), a **"who delivered today" sources catalog**, and a **recon-health watchdog**. |
+| **Saveable views** | Open Items filters are reflected two-way in the URL (bookmark / share by link) plus a per-user saved-views store with optional team sharing. |
 | **Automation** | Watch-folder auto-upload with cron schedules (APScheduler), auto-recon after every ingest, startup self-healing migrations. |
 
 ## Quickstart
@@ -93,7 +95,7 @@ flowchart TB
         routes["routes/<br/>upload · recon · reports · product modules · admin"]
         core["core/ engines<br/>matching · E-Value · BBPS · ingest · auth · maker-checker"]
         sched["APScheduler (Asia/Kolkata)<br/>watch-folder · auto-recon · EOD digest · subscriptions"]
-        models["models/database.py<br/>43 models · idempotent migrations · startup seeders"]
+        models["models/database.py<br/>45 models · idempotent migrations · startup seeders"]
     end
 
     db[("Database<br/>SQLite · MySQL · PostgreSQL")]

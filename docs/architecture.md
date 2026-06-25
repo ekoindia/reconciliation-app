@@ -17,6 +17,7 @@ flowchart LR
         rep["reports.py"]
         prod["product routers<br/>evalue · bbps · sbi_kiosk · aeps · qr · settlement_bank"]
         plat["platform<br/>auth · admin · audit · insights · workflow · auto_upload"]
+        obs["observability / governance<br/>ingestion (ledger · monitor · sources · health) · views"]
     end
     subgraph core["core/ — engines"]
         me["matching_engine.py"]
@@ -26,13 +27,14 @@ flowchart LR
         sc["scheduler.py"]
         au["auth.py · maker_checker.py"]
     end
-    db[("models/database.py<br/>43 models · migrations · seeders")]
+    db[("models/database.py<br/>45 models · migrations · seeders")]
     inst[/"instance/<br/>bank account registry · gitignored"/]
 
     ax -->|"/api"| routes
     up --> core
     rc --> core
     prod --> core
+    obs --> db
     core --> db
     sc --> ig
     ig -.->|"imports helpers — layering inversion"| up
@@ -53,14 +55,18 @@ flowchart LR
     FREC/WLR checks), `recon.py` (recon operations + Open Items), `reports.py`, product
     routers (`evalue.py`, `bbps.py`, `sbi_kiosk.py`, `aeps_settlement.py`, `qr_settlement.py`,
     `settlement_bank.py`), platform (`auth.py`, `admin.py`, `audit.py`, `insights.py`,
-    `workflow.py`, `auto_upload.py`, `recon_jobs.py`, `report_subscriptions.py`).
+    `workflow.py`, `auto_upload.py`, `recon_jobs.py`, `report_subscriptions.py`),
+    observability/governance (`ingestion.py` — ledger / monitor / sources / health,
+    `views.py` — saved views).
   - `backend/core/` — engines: `matching_engine.py` (rule-based matcher + special passes),
     `evalue_engine.py` (8 bank-statement parsers + 5-pass matcher), `bbps_engine.py`,
     `ingest_service.py` (the watch-folder copy of the ingest pipeline), `scheduler.py`,
     `notifications.py`, `report_scheduler.py`, `auth.py` (JWT + API keys), `maker_checker.py`,
     `jobs.py` (in-process job pool), `file_hash_guard.py` (SHA-256 duplicate-file guard),
-    `pdf_converter.py` (Excel/CSV/PDF → DataFrame).
-  - `backend/models/database.py` — all 43 models, hand-rolled idempotent migrations, and
+    `pdf_converter.py` (Excel/CSV/PDF → DataFrame), and the additive governance/observability
+    helpers: `config_audit.py` (config-change audit listener), `ingestion_ledger.py`,
+    `data_quality.py`, `ingestion_sources.py`, `recon_health.py`.
+  - `backend/models/database.py` — all 45 models, hand-rolled idempotent migrations, and
     seed functions that run on **every startup**.
   - `backend/instance/` — deployment-specific data (bank account registry), gitignored.
 
@@ -149,6 +155,58 @@ flowchart TD
 | **E-Value** (wallet loads, 8 banks) | Dedicated upload: internal dump upserts by TID; bank statement **replaces** prior rows per account | 5 passes: reference → fuzzy UTR → cash scoring → twice-credit → fee/debit; global cross-account reference pass |
 | **BBPS** | Dedicated upload, provider auto-detect | `eko_trxn_id == ClientRef`; refund lifecycle (`failed_pending_refund`, `refunded_but_success`) |
 | **SBI Kiosk** | 6 upload endpoints (tab-separated `.xls` statement, narration keyword parsing) | P01–P04 algorithms, scoped to rows uploaded today |
+
+## Observability & governance (additive layer)
+
+A read-only governance/observability layer added on top of the live engine — new tables
+(nullable), new read-only endpoints, and opt-in surfaces only. It never participates in
+matching and cannot change a reconciliation outcome.
+
+```mermaid
+flowchart TD
+    subgraph ingest["Ingest pipeline (both copies)"]
+        cm["confirm-mapping<br/>(interactive)"]
+        idf["ingest_dataframe<br/>(watch-folder / auto)"]
+    end
+    dq["data_quality.py<br/>per-file profile (read-only)"]
+    ledger[("IngestionEvent ledger<br/>append-only · own txn")]
+
+    cm --> dq
+    idf --> dq
+    cm -->|"completed / blocked"| ledger
+    idf -->|"completed / failed"| ledger
+    dq -->|"dq_profile JSON"| ledger
+
+    ledger --> mon["Ingestion Monitor<br/>GET /api/ingestion/events"]
+    ledger --> hlth["Recon-health watchdog<br/>GET /api/ingestion/health"]
+    src["Ingestion Sources<br/>GET /api/ingestion/sources<br/>who delivered today"]
+    wf["WatchFolderConfig"] --> src
+    us["UploadSession + Transaction join"] --> src
+    rr["recon state<br/>(current open vs resolved)"] --> hlth
+
+    subgraph gov["Config-change governance"]
+        chg["admin / auth mutation<br/>partner · rule · account · user · key"]
+        listener["config_audit before_flush listener"]
+        alog[("AuditLog<br/>append-only + before-snapshot")]
+        chg --> listener --> alog
+    end
+    alog -->|"audit_read permission"| areader["Audit Log view"]
+
+    sv[("SavedView<br/>per-user filter sets")] --> oiv["Open Items<br/>URL-synced + saved/shared views"]
+```
+
+- **Ingestion ledger → Monitor / Sources / Health.** Both ingest copies record an
+  `IngestionEvent` (file fingerprint, row counts, WLR/FREC outcome, duration) in a separate
+  transaction; the data-quality profiler attaches a read-only per-file profile. The ledger
+  powers the Ingestion Monitor, the "who delivered today" Sources catalog, and the
+  recon-health watchdog. The health view reads **current** `Transaction` state for the
+  reconciliation rate (not `ReconRun` logs, which miss D+1/reversal matches).
+- **Config-change governance.** A `before_flush` listener writes an append-only `AuditLog`
+  row with a before-snapshot for every admin/auth config mutation; reading the audit log
+  requires the `audit_read` permission.
+- **Saved views.** Open Items filters round-trip through the URL (shareable) and a per-user
+  `SavedView` store; a view is just a stored filter set replayed through the unchanged
+  Open-Items endpoint (behavior-contract #14).
 
 ## Design invariants
 
