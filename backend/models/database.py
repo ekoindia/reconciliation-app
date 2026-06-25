@@ -489,6 +489,32 @@ class IngestionEvent(Base):
     )
 
 
+class SavedView(Base):
+    """
+    Per-user saved filter set for a list screen (roadmap 1.3 — additive).
+
+    A saved view is just a stored query (the filter dict) replayed through the
+    UNCHANGED list endpoint — it never alters Open-Items query semantics, buckets,
+    or vocabulary (behavior-contract #14). `user_id` is the owner; `is_shared`
+    exposes a view read-only to other users for the same page. Not a FK (no
+    cascade onto users).
+    """
+    __tablename__ = "saved_views"
+
+    id         = Column(String(36),  primary_key=True, default=generate_id)
+    user_id    = Column(String(36),  nullable=True, index=True)   # owner
+    username   = Column(String(100), nullable=True)               # denormalized for display
+    name       = Column(String(120), nullable=False)
+    page       = Column(String(40),  default="open-items")        # which screen
+    query      = Column(Text,        nullable=True)               # JSON filter dict
+    is_shared  = Column(Boolean,     default=False)               # visible to other users
+    created_at = Column(DateTime,    default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_savedview_user_page", "user_id", "page"),
+    )
+
+
 class WatchFolderConfig(Base):
     """
     One row per upload type (fino/bank, fino/internal, airtel/bank, airtel/internal).

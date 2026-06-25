@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Download, Search, RefreshCw, Tag, X, Trash2, Tags, Banknote, ArrowLeftRight, ShieldAlert } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../utils/api'
+import SavedViews from '../components/SavedViews'
 import { isOpenItemsPartner } from '../productRegistry'
 import { STATUS_GROUPS, groupEnabled, statusEnabled, STATUS_LABEL_BY_VALUE, fieldApplies } from '../filterModel'
 
@@ -50,28 +51,33 @@ const SRC_CODES = [
 const COLS = 17  // checkbox + 15 data cols (incl. Description, CSP) + actions
 
 export default function OpenItems() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
 
-  const initReconDate = searchParams.get('recon_date') || ''
+  // Seed every filter from the URL so a shared/bookmarked link reproduces the
+  // exact view (roadmap 1.3). recon_date and date_from/to stay mutually exclusive.
+  const _q = (k) => searchParams.get(k) || ''
+  const initReconDate = _q('recon_date')
   const initFilters = {
-    partner:          searchParams.get('partner') || '',
+    partner:          _q('partner'),
     recon_date:       initReconDate,
-    date_from:        initReconDate ? '' : (searchParams.get('date_from') || ''),
-    date_to:          initReconDate ? '' : (searchParams.get('date_to') || ''),
-    side:             searchParams.get('side') || '',
-    src_code:         '',
-    eko_tid:          '',
-    tracking_number:  '',
-    match_id:         '',
-    recon_status:     searchParams.get('recon_status') || '',
-    aging:            '',
-    amount_min:       '',
-    amount_max:       '',
-    bank_account:     searchParams.get('bank_account') || '',
-    bank_description: '',
-    csp_code:         '',
-    csp_name:         '',
+    date_from:        initReconDate ? '' : _q('date_from'),
+    date_to:          initReconDate ? '' : _q('date_to'),
+    side:             _q('side'),
+    src_code:         _q('src_code'),
+    eko_tid:          _q('eko_tid'),
+    tracking_number:  _q('tracking_number'),
+    match_id:         _q('match_id'),
+    recon_status:     _q('recon_status'),
+    aging:            _q('aging'),
+    amount_min:       _q('amount_min'),
+    amount_max:       _q('amount_max'),
+    bank_account:     _q('bank_account'),
+    bank_description: _q('bank_description'),
+    csp_code:         _q('csp_code'),
+    csp_name:         _q('csp_name'),
   }
+  // Blank shape used when applying a saved view (reset, then overlay the view).
+  const BLANK_FILTERS = Object.fromEntries(Object.keys(initFilters).map(k => [k, '']))
 
   // ── All useState hooks FIRST — no hooks after this block ────────────────────
   const [filters, setFilters]             = useState(initFilters)
@@ -125,6 +131,13 @@ export default function OpenItems() {
   }, [filters])
 
   useEffect(() => { load(1) }, [filters])
+
+  // Two-way URL sync (roadmap 1.3): reflect active filters in the query string so
+  // the view is bookmarkable/shareable. `replace` avoids flooding history.
+  useEffect(() => {
+    const active = Object.fromEntries(Object.entries(filters).filter(([, v]) => v))
+    setSearchParams(active, { replace: true })
+  }, [filters])
 
   // Browser tab title reflects active filter
   useEffect(() => {
@@ -280,6 +293,14 @@ export default function OpenItems() {
 
       {/* Filters */}
       <div className="card mb-5">
+        {/* Saved views (roadmap 1.3) — save/share the current filter set */}
+        <div className="flex justify-end mb-3 pb-3 border-b border-gray-100">
+          <SavedViews
+            page="open-items"
+            filters={filters}
+            onApply={(q) => setFilters({ ...BLANK_FILTERS, ...q })}
+          />
+        </div>
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-10 gap-3">
           <div>
             <label className="text-xs text-gray-400 block mb-1">Status</label>
