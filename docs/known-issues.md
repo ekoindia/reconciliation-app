@@ -12,8 +12,11 @@ Do not "fix" these casually in a drive-by PR; open an issue and get sign-off fir
 - **SECRET_KEY dev fallback** — `core/auth.py` falls back to a known string when
   `SECRET_KEY` is unset and `ENV != production`. Always set a real `SECRET_KEY`
   (see `.env.example`). Hard-failing on a missing key would break casual local runs.
-- **`DELETE /api/upload/clear-selected`** requires only authentication, not admin (unlike
-  `/clear`). Maker-checker intercepts it when enabled. Tightening needs an ops decision.
+- **Clear/delete endpoints use three different permission gates** (an inconsistency, not a
+  uniform policy): `DELETE /api/upload/clear` requires the `clear_data` permission (admins
+  short-circuit); `DELETE /api/upload/clear-selected` requires only authentication
+  (maker-checker intercepts it when enabled); the module clears (`/api/aeps|qr|sbi/clear`)
+  require the `upload` permission. Unifying them onto one gate needs an ops decision.
 - **E-Value endpoints** use bare authentication without per-module permission gating,
   unlike core upload.
 - **`GET /api/admin/partners-public`** is deliberately unauthenticated — the login page
@@ -47,6 +50,10 @@ Do not "fix" these casually in a drive-by PR; open an issue and get sign-off fir
 - God files: `routes/upload.py`, `routes/recon.py`, `models/database.py`,
   `frontend/src/pages/Upload.jsx`, `Admin.jsx`. Split only with characterization tests and
   re-exporting facades so import sites keep working.
+- **Characterization coverage now exists** for the highest-risk logic — the matching engine
+  and the ingest parsing/classification helpers (`backend/tests/test_matching_engine_characterization.py`,
+  `test_ingestion_characterization.py`, `test_ingest_pipeline_characterization.py`). This is
+  the prerequisite for safely splitting the god files and de-duplicating the two ingest copies.
 - `@app.on_event` startup hooks, `datetime.utcnow()`, and pydantic v1 `.dict()` are
   deprecated APIs — migrate mechanically, but `utcnow()` must keep returning **naive** UTC
   (contract #12).
@@ -62,9 +69,9 @@ Do not "fix" these casually in a drive-by PR; open an issue and get sign-off fir
 - [ ] Verify `backend/recon.db` and `backend/uploads/` never appear anywhere in history.
 - [ ] Change the default admin password on every live install.
 - [ ] Set `ALLOWED_ORIGINS` to real origins (the example `.env` ships restrictive).
-- [ ] `backend/tests/test_evalue_engine.py` fixture filenames embed three real account
-      numbers; rename the local sample files to synthetic names and update the test list
-      (tests skip when the external sample dir is absent, so CI is unaffected).
+- [x] `backend/tests/test_evalue_engine.py` fixture filenames previously embedded three real
+      account numbers — **done**: renamed to synthetic `*-sample.*` (tests skip when the
+      external sample dir is absent, so CI is unaffected).
 - [ ] `backend/instance/seed_accounts.json` (real account registry) is gitignored AND
       dockerignored — copy it to each deployment manually; fresh installs start with an
       empty registry and log a notice.

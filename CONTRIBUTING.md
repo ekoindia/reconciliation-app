@@ -47,8 +47,11 @@ pytest tests/ -q
 1. **One concern per PR.** Small, reviewable changes merge fastest.
 2. **Never change reconciliation behavior silently.** Matching rules, ingestion
    mappings, amount/date parsing, and status transitions are load-bearing for
-   financial accuracy. If your change affects how transactions match, say so
-   prominently in the PR description and include before/after examples.
+   financial accuracy — the invariants are catalogued in
+   [docs/behavior-contract.md](docs/behavior-contract.md), and the characterization
+   tests in `backend/tests/test_*_characterization.py` pin the highest-risk ones. If
+   your change affects how transactions match, say so prominently in the PR description,
+   include before/after examples, and update the characterization tests to match.
 3. **No real data in the repo.** Never commit bank statements, transaction dumps,
    `.env` files, or database files — the `.gitignore` blocks these for a reason.
    Use synthetic fixtures for tests.

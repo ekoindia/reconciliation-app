@@ -37,3 +37,6 @@ If you operate an Eko Recon instance:
 - Keep `uploads/` and the database on encrypted storage; both contain raw
   transaction data
 - Install `slowapi` so rate limiting is active (enabled automatically when present)
+- Keep config/entitlement auditing on (`CONFIG_AUDIT_ENABLED`, default on) so partner,
+  rule, account, user, and API-key changes are recorded with a before-snapshot; audit-log
+  read is gated by the `audit_read` permission — grant it deliberately

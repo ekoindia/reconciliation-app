@@ -1,11 +1,15 @@
 # Eko Recon — Audit & Industry Enhancement Roadmap (deepened)
 
-> **Status:** research/advisory deliverable. **Nothing here is implemented.** Every roadmap item is designed
-> to be **100% additive** — new tables/columns (nullable, backfilled), new read-only endpoints/views, opt-in
-> flags (default off / display-only), shadow/parallel computation that writes only to new tables. **No
-> existing matching logic, ingestion/parsing, row classification, status transition, tolerance, match-ID
-> scheme, post-ingest pass order, or stored-data semantic is changed. The live reconciliation team's
-> screens, filters, workflows, and results are not touched, even slightly.**
+> **Status:** research/advisory deliverable — **now partly delivered.** The whole Tier-1 quick-win set
+> shipped in **v6.3 (2026-06-25)**: ✅ 1.1 config/entitlement change-audit, ✅ 1.2 audit-read gate,
+> ✅ 1.3 saved + URL-synced views, ✅ 1.4 ingestion event ledger + Monitor, ✅ 1.5 ingestion sources catalog,
+> ✅ 1.6 pre-ingest data-quality profiler — plus a recon-health watchdog and a 43-test characterization suite
+> (the prerequisite for the riskier refactors). Tier 2 / Tier 3 below remain advisory/unbuilt. Every roadmap
+> item is designed to be **100% additive** — new tables/columns (nullable, backfilled), new read-only
+> endpoints/views, opt-in flags (default off / display-only), shadow/parallel computation that writes only to
+> new tables. **No existing matching logic, ingestion/parsing, row classification, status transition,
+> tolerance, match-ID scheme, post-ingest pass order, or stored-data semantic is changed. The live
+> reconciliation team's screens, filters, workflows, and results are not touched, even slightly.**
 >
 > **How this was produced:** a read-only audit of all 9 subsystems (parallel agents) + an industry benchmark
 > across 8 capability dimensions against the leading platforms (BlackLine, Trintech Cadency, SmartStream TLM,
@@ -196,7 +200,7 @@ wk), L (3–8 wk), XL (multi-month).
 
 #### TIER 1 — Quick Wins (S/M, high value, zero/low risk)
 
-**1.1 — Config/entitlement change-audit shim** `[M · low]` — Make every admin/auth mutation (partner,
+**1.1 — Config/entitlement change-audit shim** `[M · low]` — **✅ SHIPPED (v6.3).** Make every admin/auth mutation (partner,
 match-rule, fee-rule, format-preset, bank-account CRUD; user create/disable/delete; permission/password
 change; API-key create/revoke) write an `AuditLog` row with actor, entity, and before-snapshot. *Closes the
 single largest control gap.* Additive: a router-level dependency or SQLAlchemy `after_*` event listener on
@@ -204,19 +208,19 @@ single largest control gap.* Additive: a router-level dependency or SQLAlchemy `
 set in `get_current_user`; gate behind `SystemSetting 'config_audit_enabled'` (default on). Append-only
 preserved (insert only); no recon/ingest path touched.
 
-**1.2 — Lock down & admin-gate audit READ** `[S · medium]` — Require `audit_read` (or `require_admin`) on
+**1.2 — Lock down & admin-gate audit READ** `[S · medium]` — **✅ SHIPPED (v6.3).** Require `audit_read` (or `require_admin`) on
 `/api/audit/logs|actions|logs/export`; exclude scoped API keys. Swap dependency `get_current_user →
 require_permission('audit_read')`; add to admin seed (admins short-circuit, so no migration). `medium` only
 because it could 403 a non-admin relying on open access — default the perm true for admin-role + announce. No
 schema/content change.
 
-**1.3 — URL-synced, saveable, shareable views** `[M · none-additive]` — Reflect every Open
+**1.3 — URL-synced, saveable, shareable views** `[M · none-additive]` — **✅ SHIPPED (v6.3).** Reflect every Open
 Items/ProductReconPage filter set in the URL (two-way) + a per-user Saved Views store. Frontend
 `setSearchParams` on filter change (filters already exist) + new `saved_views` table + new `/api/views`
 endpoints. Open-Items query semantics/buckets/vocabulary unchanged (#14) — a saved view is a stored query
 string replayed through the unchanged endpoint.
 
-**1.4 — Ingestion event ledger + lineage** `[M · low]` — Append-only `IngestionEvent` + `ingestion_rejects`
+**1.4 — Ingestion event ledger + lineage** `[M · low]` — **✅ SHIPPED (v6.3).** Append-only `IngestionEvent` + `ingestion_rejects`
 capturing source, channel, file SHA-256/name/size, detected preset, mapping version, rows
 read/accepted/**skipped-with-per-reason-breakdown**, WLR/FREC outcome, duration, resulting `UploadSession` id
 → a read-only "Ingestion Monitor." A thin wrapper records BEFORE/AFTER metrics around the **existing**
@@ -224,14 +228,14 @@ confirm-mapping/`ingest_dataframe` calls (which already return skip counts + `in
 separate transaction so a logging failure can't block ingest. Must not alter classification/ladder/tolerances/
 pass order (#2,#3,#4,#10) — reads counters the code already computes.
 
-**1.5 — Connector Registry + "Ingestion Sources" catalog** `[M · none-additive]` — A descriptive
+**1.5 — Connector Registry + "Ingestion Sources" catalog** `[M · none-additive]` — **✅ SHIPPED (v6.3)** (delivery-status view; the editable owner/SLA registry table is deferred). A descriptive
 `ConnectorSource` registry (DB + read UI) cataloguing every source — upload, watch-folder, future SFTP/API/feed
 — with type, owner, expected cadence/SLA, preset link, last-seen status; surfaces "which partner hasn't
 delivered today." New table seeded read-only from `WatchFolderConfig` + distinct partners; read-only
 `/api/ingestion/sources` aggregating `UploadSession`/`WatchFolderConfig.last_trigger_*` + `Transaction
 max(created_at)`. Zero changes to upload/ingest/scheduler.
 
-**1.6 — Pre-ingest data-quality profiler (read-only, no gating)** `[M · none-additive]` — At parse time
+**1.6 — Pre-ingest data-quality profiler (read-only, no gating)** `[M · none-additive]` — **✅ SHIPPED (v6.3).** At parse time
 compute & store per-file profile: row count, per-mapped-column null/blank rate, parseable-amount rate,
 date-parse rate, duplicate-key rate, control-total/checksum vs `sum(amount)`; non-blocking warning banner on
 threshold breach. Pure read-only over the already-parsed DataFrame; stored on `ingestion_events`, returned as

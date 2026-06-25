@@ -4,9 +4,9 @@ Eko Recon ships on SQLite and is **dual-database by design** — the same code r
 MySQL by changing one environment variable. This runbook is the safe path to move an
 existing deployment (with live data) onto MySQL.
 
-> Status: the code is MySQL-ready and has been dress-rehearsed on MySQL 8 (schema
-> builds, all tables migrate, 36-char UUID keys survive, FK joins intact, app starts
-> and serves). What remains is provisioning MySQL and running the cutover below.
+> Status: **production is live on MySQL 8** (cutover complete — schema builds, all tables
+> migrated, 36-char UUID keys survive, FK joins intact, app serves with `"db":"mysql"`).
+> This runbook remains the safe path for cutting any other SQLite deployment over to MySQL.
 
 ## Why move
 
@@ -34,7 +34,7 @@ larger data, concurrent writes, and backups/replication properly.
 ## Cutover (run on the app host)
 
 ```bash
-cd /home/himanshu/reconciliation-app/backend
+cd /path/to/recon-app/backend
 
 # 1. BACK UP the live SQLite DB first (always).
 cp recon.db ~/backup-$(date +%F)/recon.db.pre-mysql

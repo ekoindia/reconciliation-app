@@ -6,6 +6,12 @@ funds. PRs that touch them must say so explicitly and carry finance/ops sign-off
 
 Reviewers: cite this file by item number.
 
+> Several of these are now pinned by a characterization test suite
+> (`backend/tests/test_matching_engine_characterization.py`,
+> `test_ingestion_characterization.py`, `test_ingest_pipeline_characterization.py`) —
+> notably items 1, 2, 3, 5, 6, 7, 8, 10, and 18. Run `pytest tests/ -q` before **and** after
+> any change near them; a diff in those tests means you changed load-bearing behavior.
+
 1. **Match-ID scheme & sequencing** — `{PREFIX}-{YYYYMMDD}-{NNNN}` format, MAX+1 (never
    COUNT) semantics of `_next_seq` (`core/matching_engine.py`), the startup duplicate
    repair and per-series backfill counters (`main.py`). These are mutually dependent;
