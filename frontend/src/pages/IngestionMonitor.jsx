@@ -16,6 +16,13 @@ const CHANNEL_BADGE = {
   api:          { label: '🔌 API',           cls: 'bg-indigo-50 text-indigo-700' },
 }
 
+const SEV = {
+  ok:       { cls: 'bg-green-50 text-green-700 border-green-200',  dot: 'bg-green-500',  label: 'Healthy' },
+  warn:     { cls: 'bg-amber-50 text-amber-700 border-amber-200',  dot: 'bg-amber-500',  label: 'Warning' },
+  critical: { cls: 'bg-red-50 text-red-700 border-red-200',        dot: 'bg-red-500',    label: 'Critical' },
+  unknown:  { cls: 'bg-gray-50 text-gray-600 border-gray-200',     dot: 'bg-gray-400',   label: 'Unknown' },
+}
+
 const fmtBytes = (n) => {
   if (n == null) return '—'
   if (n < 1024) return `${n} B`
@@ -29,6 +36,7 @@ export default function IngestionMonitor() {
   const [page, setPage]       = useState(1)
   const [loading, setLoading] = useState(false)
   const [summary, setSummary] = useState(null)
+  const [health, setHealth] = useState(null)
 
   const [filters, setFilters] = useState({
     channel: '', status: '', partner: '', from_date: '', to_date: '',
@@ -47,6 +55,7 @@ export default function IngestionMonitor() {
   useEffect(() => { load(1) }, [filters])
   useEffect(() => {
     api.get('/ingestion/summary', { params: { days: 7 } }).then(r => setSummary(r.data)).catch(() => {})
+    api.get('/ingestion/health', { params: { days: 7 } }).then(r => setHealth(r.data)).catch(() => {})
   }, [])
 
   return (
@@ -63,6 +72,26 @@ export default function IngestionMonitor() {
       <p className="text-sm text-gray-500 mb-5">
         Lineage of every ingestion attempt across all channels — file fingerprint, row accounting, WLR/FREC outcome.
       </p>
+
+      {/* Recon-health watchdog (D2) */}
+      {health && (
+        <div className={`card mb-5 border ${SEV[health.status]?.cls || SEV.unknown.cls}`}>
+          <div className="flex items-center gap-2 mb-3">
+            <span className={`inline-block w-2.5 h-2.5 rounded-full ${SEV[health.status]?.dot || SEV.unknown.dot}`} />
+            <span className="font-semibold text-sm">Recon health — {SEV[health.status]?.label || health.status}</span>
+            <span className="text-xs text-gray-400">last {health.window_days}d</span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {health.checks.map(c => (
+              <span key={c.key} title={c.message}
+                    className={`text-xs px-2 py-1 rounded border flex items-center gap-1.5 ${SEV[c.severity]?.cls || SEV.unknown.cls}`}>
+                <span className={`inline-block w-1.5 h-1.5 rounded-full ${SEV[c.severity]?.dot || SEV.unknown.dot}`} />
+                {c.label}: {c.message}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 7-day summary */}
       {summary && (

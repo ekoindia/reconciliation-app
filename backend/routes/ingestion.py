@@ -116,6 +116,17 @@ def summary(
             "rows_accepted": rows_accepted, "rows_skipped": rows_skipped}
 
 
+@router.get("/health")
+def recon_health(
+    days: int = Query(7, ge=1, le=90),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_permission("upload")),
+):
+    """Read-only recon-health watchdog (D2) — failure signals in one report."""
+    from core.recon_health import compute_recon_health
+    return compute_recon_health(db, days=days)
+
+
 @router.get("/events/{event_id}")
 def get_event(
     event_id: str,
