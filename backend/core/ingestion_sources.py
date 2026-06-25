@@ -52,19 +52,18 @@ def compute_sources(db) -> dict:
     except Exception:
         pass
 
-    # expected sources from the partner catalog
+    # Sources are exactly the (partner, side) pairs that flow through the core
+    # Transaction pipeline: ones that have actually delivered (Transaction join)
+    # or have an auto watch-folder configured. We deliberately do NOT pad this from
+    # the full PartnerConfig list — module products (E-Value, BBPS, SBI, PG, AePS/QR
+    # settlement) store their data in their OWN tables, never touch Transaction, and
+    # would otherwise show a misleading "never delivered" here. PartnerConfig is used
+    # only to resolve friendly labels.
     keys = set(last_by_key) | set(watch_by_key)
     labels = {}
     try:
-        for p in db.query(PartnerConfig).filter(PartnerConfig.is_active == True).all():
-            sides = []
-            if getattr(p, "has_bank_statement", False):
-                sides.append("bank")
-            if getattr(p, "has_internal_dump", False):
-                sides.append("internal")
-            for s in sides:
-                keys.add((p.slug, s))
-                labels[(p.slug, s)] = p.display_name
+        for p in db.query(PartnerConfig).all():
+            labels[p.slug] = p.display_name
     except Exception:
         pass
 
@@ -86,7 +85,7 @@ def compute_sources(db) -> dict:
         sources.append({
             "partner": partner,
             "side": side,
-            "label": labels.get((partner, side)) or partner,
+            "label": labels.get(partner) or partner,
             "has_auto": bool(w),
             "auto_enabled": bool(getattr(w, "is_enabled", False)) if w else False,
             "watch_status": getattr(w, "last_trigger_status", None) if w else None,

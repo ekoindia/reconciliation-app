@@ -64,10 +64,23 @@ def test_stale_delivery(db):
 
 
 def test_partner_never_delivered(db):
-    _partner(db, "airtel")               # configured but no uploads at all
+    # A watch folder is configured (so it's a known source) but it has never
+    # delivered — must show 'never', not be absent.
+    _partner(db, "airtel")
+    db.add(WatchFolderConfig(label="Airtel Bank", partner="airtel", side="bank",
+                             is_enabled=True))
+    db.commit()
     s = _src(compute_sources(db), "airtel", "bank")
     assert s["status"] == "never"
     assert s["last_delivered_at"] is None
+
+
+def test_module_partner_without_transactions_is_not_listed(db):
+    # Module products store data in their own tables (never Transaction) and have
+    # no watch config — they must NOT appear as a misleading 'never' source.
+    _partner(db, "evalue")
+    r = compute_sources(db)
+    assert all(s["partner"] != "evalue" for s in r["sources"])
 
 
 def test_mixed_dump_credits_each_partner(db):
@@ -90,10 +103,12 @@ def test_watch_folder_status_surfaced(db):
 
 def test_summary_counts(db):
     _partner(db, "fino")
-    _partner(db, "airtel")
     _delivery(db, "fino", "fino", "bank", NOW)            # delivered
     _delivery(db, "fino", "fino", "internal", NOW - datetime.timedelta(days=2))  # stale
+    db.add(WatchFolderConfig(label="Airtel Bank", partner="airtel", side="bank",
+                             is_enabled=True))            # configured, never delivered
+    db.commit()
     r = compute_sources(db)
     assert r["summary"]["delivered_today"] >= 1
     assert r["summary"]["stale"] >= 1
-    assert r["summary"]["never"] >= 1   # airtel never delivered
+    assert r["summary"]["never"] >= 1
