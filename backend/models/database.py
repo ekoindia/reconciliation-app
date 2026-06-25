@@ -1022,6 +1022,32 @@ class SBIP04Result(Base):
     created_at      = Column(DateTime, default=datetime.datetime.utcnow)
 
 
+class SBIManualMatch(Base):
+    """
+    Operator manual match for SBI Kiosk recon (persistent overlay, additive).
+
+    P01–P04 results are delete-and-recreated on every run (behavior-contract #17),
+    so a manual match can't live in the result row — it would be wiped. It is stored
+    here keyed by the row's stable BUSINESS key (not its regenerated id) and overlaid
+    onto the results + exports at READ time, so it survives re-runs without touching
+    the run logic. Deletable by an operator to undo.
+    """
+    __tablename__ = "sbi_manual_matches"
+
+    id              = Column(String(36),  primary_key=True, default=generate_id)
+    recon_date      = Column(String(10),  index=True)
+    process         = Column(String(5),   index=True)      # p02 | p03
+    match_key       = Column(String(200), index=True)      # stable business key of the row
+    counterpart_ref = Column(String(120), nullable=True)   # what it was matched against
+    remark          = Column(String(500))
+    created_by      = Column(String(100))
+    created_at      = Column(DateTime,    default=datetime.datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_sbimm_lookup", "recon_date", "process", "match_key"),
+    )
+
+
 # ─── QR Collection Settlement & Chargeback Models ─────────────────────────────
 
 class QRSettlement(Base):

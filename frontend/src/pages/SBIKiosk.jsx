@@ -255,6 +255,9 @@ function P02Tab() {
   const [running, setRunning] = useState(false)
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
+  const [mmModal, setMmModal] = useState(null)              // row being manually matched
+  const [mmForm, setMmForm] = useState({ counterpart_ref: '', remark: '' })
+  const [mmSaving, setMmSaving] = useState(false)
 
   const runRecon = async () => {
     setRunning(true)
@@ -274,6 +277,25 @@ function P02Tab() {
   }, [reconDate, filter])
 
   useEffect(() => { loadResults() }, [loadResults])
+
+  const submitManualMatch = async () => {
+    if ((mmForm.remark || '').trim().length < 5) { toast.error('Remark (≥5 chars) required'); return }
+    setMmSaving(true)
+    try {
+      await api.post('/sbi/manual-match', {
+        process: 'p02', result_id: mmModal.id,
+        counterpart_ref: mmForm.counterpart_ref || null, remark: mmForm.remark.trim(),
+      })
+      toast.success('Manually matched')
+      setMmModal(null); setMmForm({ counterpart_ref: '', remark: '' }); loadResults()
+    } catch (e) { toast.error(e.response?.data?.detail || 'Manual match failed') }
+    finally { setMmSaving(false) }
+  }
+  const undoManualMatch = async (row) => {
+    if (!row.manual_match_id || !confirm('Undo this manual match?')) return
+    try { await api.delete(`/sbi/manual-match/${row.manual_match_id}`); toast.success('Reverted'); loadResults() }
+    catch { toast.error('Undo failed') }
+  }
 
   return (
     <div>
@@ -308,6 +330,12 @@ function P02Tab() {
                 <StatusBadge status={k}/>
               </div>
             ))}
+            {data.manual_matched_count > 0 && (
+              <div className="card p-3 text-center min-w-[100px] bg-amber-50 border border-amber-200">
+                <div className="text-xl font-bold text-amber-700">{data.manual_matched_count}</div>
+                <span className="text-[11px] text-amber-700 font-medium">Manual</span>
+              </div>
+            )}
           </div>
           <div className="card overflow-hidden p-0">
             <div className="overflow-x-auto">
@@ -324,6 +352,7 @@ function P02Tab() {
                     <th className="text-center px-3 py-2">Reversal</th>
                     <th className="text-center px-3 py-2">Status</th>
                     <th className="text-left px-3 py-2">Description</th>
+                    <th className="text-center px-3 py-2">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -341,6 +370,13 @@ function P02Tab() {
                       <td className="px-3 py-2 text-center text-xs text-gray-500">{r.reversal_type || '—'}</td>
                       <td className="px-3 py-2 text-center"><span className={`text-xs font-medium ${r.success_status === 'Success' ? 'text-green-600' : 'text-red-500'}`}>{r.success_status}</span></td>
                       <td className="px-3 py-2 text-gray-500 max-w-[180px]"><span className="block truncate" title={r.bank_description || ''}>{r.bank_description || '—'}</span></td>
+                      <td className="px-3 py-2 text-center whitespace-nowrap">
+                        {r.match_status === 'Manual_Matched'
+                          ? <button onClick={() => undoManualMatch(r)} title={r.manual_remark || ''} className="text-[11px] text-amber-700 hover:underline">↩ undo</button>
+                          : (r.match_status || '').startsWith('Unmatched')
+                            ? <button onClick={() => { setMmModal(r); setMmForm({ counterpart_ref: '', remark: '' }) }} className="text-[11px] text-primary hover:underline">manual match</button>
+                            : '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -349,6 +385,30 @@ function P02Tab() {
             </div>
           </div>
         </>
+      )}
+
+      {mmModal && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setMmModal(null)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5" onClick={e => e.stopPropagation()}>
+            <h3 className="font-semibold text-gray-800 mb-1">Manual match — P02 (Bank vs Transaction)</h3>
+            <p className="text-xs text-gray-500 mb-3">
+              Ref <span className="font-mono">{mmModal.reference_number}</span> · {mmModal.bank_type} · {fmtINR(mmModal.bank_amount)}.
+              Recorded with your remark and <strong>persists across re-runs</strong>.
+            </p>
+            <label className="text-xs text-gray-500 block mb-1">Counterpart reference (optional)</label>
+            <input className="input w-full mb-3" value={mmForm.counterpart_ref}
+              onChange={e => setMmForm({ ...mmForm, counterpart_ref: e.target.value })}
+              placeholder="the transaction-report reference it matches" />
+            <label className="text-xs text-gray-500 block mb-1">Remark (required, ≥5 chars)</label>
+            <textarea className="input w-full mb-4" rows={3} value={mmForm.remark}
+              onChange={e => setMmForm({ ...mmForm, remark: e.target.value })}
+              placeholder="Why is this a match? (kept in the audit log)" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setMmModal(null)} className="btn-ghost">Cancel</button>
+              <button onClick={submitManualMatch} disabled={mmSaving} className="btn-primary">{mmSaving ? 'Saving…' : 'Confirm match'}</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

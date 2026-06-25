@@ -32,6 +32,7 @@ from typing import Optional, List
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -40,6 +41,7 @@ from models.database import (
     SBIBankTransaction, SBITxnReport, SBIKOLimits,
     SBIKOCashHolding, SBILimitFailure, SBICSPMaster,
     SBIP01Result, SBIP02Result, SBIP03Result, SBIP04Result,
+    SBIManualMatch,
 )
 from core.auth import get_current_user, require_permission
 
@@ -980,7 +982,11 @@ def get_p02_results(
                            .filter(SBIBankTransaction.id.in_(_bt_ids)).all())
     data = [{**{k: getattr(r, k) for k in ('id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')},
              'bank_description': _desc_map.get(r.bank_txn_id) or ''} for r in rows]
-    return {"rows": data, "summary": summary, "total": total, "page": page, "page_size": page_size}
+    data = _apply_manual_matches(db, "p02", recon_date, data)
+    _mmq = db.query(SBIManualMatch).filter(SBIManualMatch.process == "p02")
+    if recon_date: _mmq = _mmq.filter(SBIManualMatch.recon_date == recon_date)
+    return {"rows": data, "summary": summary, "manual_matched_count": _mmq.count(),
+            "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/p03/results")
@@ -1002,7 +1008,11 @@ def get_p03_results(
     summary = {s: c for s, c in summary_q.group_by(SBIP03Result.match_status).all()}
     rows = q.order_by(SBIP03Result.csp_code).offset((page-1)*page_size).limit(page_size).all()
     data = [{k: getattr(r, k) for k in ('id','csp_code','mode','ref_number','txn_amount','txn_date','bank_credit_date','bank_amount','match_status','date_shift','match_priority','notes','recon_date')} for r in rows]
-    return {"rows": data, "summary": summary, "total": total, "page": page, "page_size": page_size}
+    data = _apply_manual_matches(db, "p03", recon_date, data)
+    _mmq = db.query(SBIManualMatch).filter(SBIManualMatch.process == "p03")
+    if recon_date: _mmq = _mmq.filter(SBIManualMatch.recon_date == recon_date)
+    return {"rows": data, "summary": summary, "manual_matched_count": _mmq.count(),
+            "total": total, "page": page, "page_size": page_size}
 
 
 @router.get("/p04/results")
@@ -1063,7 +1073,10 @@ def _build_sbi_export(db, which, recon_date=None, match_status=None) -> io.Bytes
             if match_status and hasattr(model, "match_status"):
                 q = q.filter(model.match_status == match_status)
             rows = q.order_by(getattr(model, order_col)).all()
-            df = pd.DataFrame([{c: getattr(r, c) for c in cols} for r in rows], columns=cols)
+            recs = [{c: getattr(r, c) for c in cols} for r in rows]
+            if p in ("p02", "p03"):
+                recs = _apply_manual_matches(db, p, recon_date, recs)
+            df = pd.DataFrame(recs, columns=cols)
             df.to_excel(writer, sheet_name=sheet[:31], index=False)
             ws = writer.sheets[sheet[:31]]
             fill = PatternFill("solid", fgColor="094053")
@@ -1104,6 +1117,140 @@ def export_sbi(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+# ── Manual match (persistent overlay across re-runs) ──────────────────────────
+# P02/P03 results are delete-and-recreated each run (#17), so a manual match is
+# stored keyed by the row's STABLE business key and overlaid at READ time onto the
+# results + exports — surviving re-runs without touching the run logic. P01/P04
+# don't carry a bank↔report pairing, so manual match applies to P02 and P03.
+
+def _manual_key(process: str, row: dict):
+    """Stable business key for a result row (survives delete-and-recreate)."""
+    p = (process or "").lower()
+    if p == "p02":
+        ref = row.get("reference_number")
+        return f"{ref}|{row.get('bank_type') or ''}" if ref else None
+    if p == "p03":
+        csp, ref = row.get("csp_code"), row.get("ref_number")
+        return f"{csp or ''}|{ref or ''}" if (csp or ref) else None
+    return None
+
+
+def _apply_manual_matches(db, process: str, recon_date, rows: list) -> list:
+    """Overlay persisted manual matches onto serialized result dicts (read-time)."""
+    p = (process or "").lower()
+    if p not in ("p02", "p03") or not rows:
+        return rows
+    q = db.query(SBIManualMatch).filter(SBIManualMatch.process == p)
+    if recon_date:
+        q = q.filter(SBIManualMatch.recon_date == recon_date)
+    mm = {(m.recon_date, m.match_key): m for m in q.all()}
+    if not mm:
+        return rows
+    for r in rows:
+        key = _manual_key(p, r)
+        m = mm.get((r.get("recon_date"), key)) if key else None
+        if m:
+            r["match_status"] = "Manual_Matched"
+            r["manual_remark"] = m.remark
+            r["manual_counterpart"] = m.counterpart_ref
+            r["manual_match_id"] = m.id
+    return rows
+
+
+class ManualMatchIn(BaseModel):
+    process: str
+    result_id: str
+    counterpart_ref: Optional[str] = None
+    remark: str = ""
+
+
+@router.post("/manual-match")
+def create_manual_match(
+    body: ManualMatchIn,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("src_assign")),
+):
+    """Manually resolve an unmatched P02/P03 row. Persists across re-runs (overlay)."""
+    p = (body.process or "").lower()
+    model = {"p02": SBIP02Result, "p03": SBIP03Result}.get(p)
+    if not model:
+        raise HTTPException(status_code=400, detail="Manual match supports process p02 or p03")
+    if len((body.remark or "").strip()) < 5:
+        raise HTTPException(status_code=400, detail="A remark (≥5 characters) is required")
+    row = db.query(model).filter(model.id == body.result_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Result row not found")
+    row_dict = {c.name: getattr(row, c.name) for c in model.__table__.columns}
+    key = _manual_key(p, row_dict)
+    if not key:
+        raise HTTPException(status_code=400, detail="Row has no stable key to match on")
+    existing = db.query(SBIManualMatch).filter(
+        SBIManualMatch.recon_date == row.recon_date,
+        SBIManualMatch.process == p,
+        SBIManualMatch.match_key == key,
+    ).first()
+    if existing:
+        existing.counterpart_ref = body.counterpart_ref
+        existing.remark = body.remark.strip()
+        existing.created_by = current_user.username
+        mm = existing
+    else:
+        mm = SBIManualMatch(recon_date=row.recon_date, process=p, match_key=key,
+                            counterpart_ref=body.counterpart_ref, remark=body.remark.strip(),
+                            created_by=current_user.username)
+        db.add(mm)
+    try:
+        db.add(AuditLog(user_id=current_user.id, username=current_user.username,
+                        action="sbi_manual_match", action_type="human",
+                        entity_type="sbi", entity_id=mm.id,
+                        detail=json.dumps({"process": p, "recon_date": row.recon_date,
+                                           "match_key": key, "counterpart_ref": body.counterpart_ref,
+                                           "remark": body.remark.strip()})))
+    except Exception:
+        pass
+    db.commit()
+    return {"id": mm.id, "match_status": "Manual_Matched", "match_key": key}
+
+
+@router.delete("/manual-match/{mm_id}")
+def delete_manual_match(
+    mm_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_permission("src_assign")),
+):
+    """Undo a manual match (reverts the row to its algorithm-computed status)."""
+    mm = db.query(SBIManualMatch).filter(SBIManualMatch.id == mm_id).first()
+    if not mm:
+        raise HTTPException(status_code=404, detail="Manual match not found")
+    db.delete(mm)
+    try:
+        db.add(AuditLog(user_id=current_user.id, username=current_user.username,
+                        action="sbi_manual_unmatch", action_type="human",
+                        entity_type="sbi", entity_id=mm_id,
+                        detail=json.dumps({"process": mm.process, "match_key": mm.match_key})))
+    except Exception:
+        pass
+    db.commit()
+    return {"deleted": mm_id}
+
+
+@router.get("/manual-match")
+def list_manual_matches(
+    recon_date: Optional[str] = None,
+    process: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    q = db.query(SBIManualMatch)
+    if recon_date: q = q.filter(SBIManualMatch.recon_date == recon_date)
+    if process:    q = q.filter(SBIManualMatch.process == process.lower())
+    rows = q.order_by(SBIManualMatch.created_at.desc()).all()
+    return {"rows": [{"id": m.id, "recon_date": m.recon_date, "process": m.process,
+                      "match_key": m.match_key, "counterpart_ref": m.counterpart_ref,
+                      "remark": m.remark, "by": m.created_by, "at": str(m.created_at)} for m in rows],
+            "count": len(rows)}
 
 
 @router.get("/summary")
