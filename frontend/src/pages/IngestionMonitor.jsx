@@ -148,7 +148,13 @@ export default function IngestionMonitor() {
                   return (
                     <tr key={ev.id} className={`hover:bg-gray-50 border-b border-gray-50 ${ev.status === 'failed' ? 'bg-red-50/30' : ev.status === 'blocked' ? 'bg-amber-50/30' : ''}`}>
                       <td className="table-td"><span className={`text-xs px-1.5 py-0.5 rounded font-medium ${ch.cls}`}>{ch.label}</span></td>
-                      <td className="table-td"><span className={`text-xs px-2 py-0.5 rounded font-medium ${STATUS_BADGE[ev.status] || 'bg-gray-100 text-gray-600'}`}>{ev.status || '—'}</span></td>
+                      <td className="table-td">
+                        <span className={`text-xs px-2 py-0.5 rounded font-medium ${STATUS_BADGE[ev.status] || 'bg-gray-100 text-gray-600'}`}>{ev.status || '—'}</span>
+                        {ev.dq_profile?.has_warnings && (
+                          <span className="ml-1 text-xs px-1.5 py-0.5 rounded font-medium bg-amber-50 text-amber-700"
+                                title={(ev.dq_profile.warnings || []).join('\n')}>⚠ DQ</span>
+                        )}
+                      </td>
                       <td className="table-td font-mono text-xs text-gray-500 whitespace-nowrap">{ev.created_at?.replace('T', ' ').slice(0, 19)}</td>
                       <td className="table-td text-xs"><span className="font-medium text-gray-700">{ev.partner || '—'}</span><span className="text-gray-400"> / {ev.side || '—'}</span></td>
                       <td className="table-td text-xs text-gray-600 max-w-[200px] truncate" title={`${ev.filename || ''}\n${ev.file_sha256 || ''}\n${fmtBytes(ev.file_size)}`}>
@@ -163,11 +169,11 @@ export default function IngestionMonitor() {
                       </td>
                       <td className="table-td text-right tabular-nums text-xs text-gray-500">{ev.duration_ms ?? '—'}</td>
                       <td className="table-td text-xs text-gray-600 max-w-xs">
-                        {(ev.detail || ev.skip_breakdown)
+                        {(ev.detail || ev.skip_breakdown || ev.dq_profile)
                           ? <details className="cursor-pointer">
                               <summary className="text-primary hover:underline">View</summary>
                               <pre className="mt-1 bg-gray-50 rounded p-2 text-xs overflow-auto max-h-40 whitespace-pre-wrap">
-                                {JSON.stringify({ detail: ev.detail, skip_breakdown: ev.skip_breakdown, sha256: ev.file_sha256, size: fmtBytes(ev.file_size) }, null, 2)}
+                                {JSON.stringify({ detail: ev.detail, skip_breakdown: ev.skip_breakdown, data_quality: ev.dq_profile, sha256: ev.file_sha256, size: fmtBytes(ev.file_size) }, null, 2)}
                               </pre>
                             </details>
                           : '—'}

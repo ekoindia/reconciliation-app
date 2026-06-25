@@ -1745,6 +1745,14 @@ def confirm_mapping(
         except Exception as _e:
             logger.warning(f"sev_cfg lookup: {_e}")
 
+    # ── Pre-ingest data-quality profile (roadmap 1.6 — read-only, never gates) ──
+    _dq = None
+    try:
+        from core.data_quality import profile_dataframe
+        _dq = profile_dataframe(df, mapping_dict)
+    except Exception:
+        _dq = None
+
     # ── Ingestion lineage ledger (roadmap 1.4 — additive, isolated txn) ──────────
     # Reads counters already computed above; never alters the ingest result.
     try:
@@ -1763,11 +1771,14 @@ def confirm_mapping(
             wlr_frec="passed",   # WLR/FREC enforced at /upload/file before this point
             duration_ms=int((time.monotonic() - _ingest_t0) * 1000),
             upload_session_id=session.id,
+            dq_profile=_dq,
         )
     except Exception:
         pass
 
     return {
+        # roadmap 1.6: read-only data-quality profile (new Step-3 field, additive #25)
+        "data_quality": _dq,
         "message": "Ingested successfully",
         "row_count": txn_count,
         "fee_charge_count": fee_count,

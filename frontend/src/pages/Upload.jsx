@@ -1343,6 +1343,20 @@ export default function Upload({ forcedProduct = null, embedded = false }) {
             </div>
           )}
 
+          {/* Data-quality profile (roadmap 1.6) — non-blocking, display-only */}
+          {ingestResult?.data_quality?.has_warnings && (
+            <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
+              <span className="text-base mt-0.5">⚠️</span>
+              <div>
+                <div className="font-semibold mb-0.5">Data-quality notice — informational only, nothing was blocked</div>
+                <ul className="list-disc ml-4 space-y-0.5">
+                  {ingestResult.data_quality.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+                <div className="text-amber-600 mt-1">Full profile is on the Ingestion Monitor.</div>
+              </div>
+            </div>
+          )}
+
           {/* SEV notice when settlement bank not configured */}
           {ingestResult?.sev_notice && (
             <div className="mb-4 bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 text-xs text-indigo-700 flex items-start gap-2">

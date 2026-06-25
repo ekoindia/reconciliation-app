@@ -42,7 +42,7 @@ def record_ingestion_event(**fields):
     """
     try:
         from models.database import SessionLocal, IngestionEvent
-        for k in ("skip_breakdown", "detail"):
+        for k in ("skip_breakdown", "detail", "dq_profile"):
             v = fields.get(k)
             if v is not None and not isinstance(v, str):
                 fields[k] = json.dumps(v, default=str)

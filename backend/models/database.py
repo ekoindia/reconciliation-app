@@ -478,6 +478,9 @@ class IngestionEvent(Base):
     duration_ms       = Column(Integer,     nullable=True)
     upload_session_id = Column(String(36),  nullable=True)   # deliberately NOT a FK
     detail            = Column(Text,        nullable=True)   # JSON blob — extra context / error message
+    # roadmap 1.6: read-only per-file data-quality profile (JSON) — blank/amount/
+    # date parse rates, duplicate-key rate, non-blocking warnings. Display-only.
+    dq_profile        = Column(Text,        nullable=True)
 
     __table_args__ = (
         Index("ix_ingevt_created",         "created_at"),
@@ -1338,6 +1341,8 @@ def _run_migrations():
         "api_keys": [("allowed_ips", "VARCHAR(500)")],
         "partner_configs": [("settlement_carry_days", "INTEGER")],
         "users": [("allowed_products", "TEXT")],
+        # roadmap 1.6: data-quality profile on the 1.4 ingestion ledger
+        "ingestion_events": [("dq_profile", "TEXT")],
     }
 
     with engine.connect() as conn:

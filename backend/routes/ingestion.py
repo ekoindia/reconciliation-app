@@ -51,6 +51,7 @@ def _row(e: IngestionEvent) -> dict:
         "duration_ms": e.duration_ms,
         "upload_session_id": e.upload_session_id,
         "detail": _jload(e.detail),
+        "dq_profile": _jload(e.dq_profile),
     }
 
 

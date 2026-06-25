@@ -207,6 +207,12 @@ def ingest_dataframe(
             pass
         _accepted = (result.get("row_count", 0) + result.get("fee_charge_count", 0)
                      + result.get("settlement_credit_count", 0) + result.get("reversal_count", 0))
+        _dq = None
+        try:
+            from core.data_quality import profile_dataframe
+            _dq = profile_dataframe(df, mapping_dict)
+        except Exception:
+            _dq = None
         record_ingestion_event(
             channel=_channel, status="completed",
             partner=session.partner, side=session.side,
@@ -219,6 +225,7 @@ def ingest_dataframe(
             wlr_frec="not_checked",
             duration_ms=int((_time.monotonic() - _t0) * 1000),
             upload_session_id=session.id,
+            dq_profile=_dq,
         )
     except Exception:
         pass
