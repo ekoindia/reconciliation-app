@@ -68,9 +68,15 @@ export default {
         soft: "0 2px 4px -2px rgb(16 24 40 / 0.06), 0 4px 8px -2px rgb(16 24 40 / 0.08)",
       },
       keyframes: {
+        // Opacity-only on purpose: a `transform` here (even translateY(0)) with
+        // fill-mode `both` leaves a non-`none` transform on every
+        // `.animate-fade-in` element forever, making it the containing block for
+        // any descendant `position:fixed` modal and clipping it to the content
+        // area instead of the viewport. Keeping this transform-free fixes that at
+        // the root for ALL modals (App's page wrapper uses animate-fade-in).
         "fade-in": {
-          from: { opacity: "0", transform: "translateY(4px)" },
-          to: { opacity: "1", transform: "translateY(0)" },
+          from: { opacity: "0" },
+          to: { opacity: "1" },
         },
         shimmer: {
           "100%": { transform: "translateX(100%)" },
