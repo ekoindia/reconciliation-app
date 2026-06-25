@@ -946,12 +946,17 @@ def mark_p04_done(
 def get_p01_results(
     recon_date: Optional[str] = None,
     status: Optional[str] = None,
+    ko_id: Optional[str] = None,
+    txn_date: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     q = db.query(SBIP01Result)
     if recon_date: q = q.filter(SBIP01Result.recon_date == recon_date)
     if status: q = q.filter(SBIP01Result.status == status)
+    if ko_id:  q = q.filter(SBIP01Result.ko_id.like(f"%{ko_id}%"))
+    if txn_date:  # match the bank statement date OR the wallet deduction date (D±1)
+        q = q.filter((SBIP01Result.bank_txn_date == txn_date) | (SBIP01Result.deduct_date == txn_date))
     rows = q.order_by(SBIP01Result.ko_id).all()
     grand = {"wallet_withdrawn": 0.0, "bank_settled": 0.0, "difference": 0.0}
     data = []
@@ -967,19 +972,30 @@ def get_p01_results(
 def get_p02_results(
     recon_date: Optional[str] = None,
     match_status: Optional[str] = None,
+    ko_id: Optional[str] = None,
+    reference: Optional[str] = None,
+    bank_type: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    q = db.query(SBIP02Result)
-    if recon_date:   q = q.filter(SBIP02Result.recon_date == recon_date)
+    # Filters that narrow which rows are shown (applied to the row list AND the
+    # summary so counts match the filtered view). match_status is the summary's
+    # grouping key, so it's NOT applied to the summary.
+    def _common(query):
+        if recon_date: query = query.filter(SBIP02Result.recon_date == recon_date)
+        if ko_id:      query = query.filter(SBIP02Result.ko_id.like(f"%{ko_id}%"))
+        if reference:  query = query.filter(SBIP02Result.reference_number.like(f"%{reference}%"))
+        if bank_type:  query = query.filter(SBIP02Result.bank_type == bank_type)
+        return query
+
+    q = _common(db.query(SBIP02Result))
     if match_status: q = q.filter(SBIP02Result.match_status == match_status)
     total = q.count()
-    # Summary from full set (cheap COUNT aggregation)
+    # Summary from the filtered set (excluding the match_status filter)
     from sqlalchemy import func as sqlfunc
-    summary_q = db.query(SBIP02Result.match_status, sqlfunc.count(SBIP02Result.id))
-    if recon_date: summary_q = summary_q.filter(SBIP02Result.recon_date == recon_date)
+    summary_q = _common(db.query(SBIP02Result.match_status, sqlfunc.count(SBIP02Result.id)))
     summary = {s: c for s, c in summary_q.group_by(SBIP02Result.match_status).all()}
     rows = q.order_by(SBIP02Result.reference_number).offset((page-1)*page_size).limit(page_size).all()
     # Bank-statement narration (read-only) for this page's rows, via the
@@ -1002,18 +1018,27 @@ def get_p02_results(
 def get_p03_results(
     recon_date: Optional[str] = None,
     match_status: Optional[str] = None,
+    csp_code: Optional[str] = None,
+    mode: Optional[str] = None,
+    txn_date: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
-    q = db.query(SBIP03Result)
-    if recon_date:   q = q.filter(SBIP03Result.recon_date == recon_date)
+    def _common(query):
+        if recon_date: query = query.filter(SBIP03Result.recon_date == recon_date)
+        if csp_code:   query = query.filter(SBIP03Result.csp_code.like(f"%{csp_code}%"))
+        if mode:       query = query.filter(SBIP03Result.mode == mode)
+        if txn_date:   # the transaction date OR the bank credit date
+            query = query.filter((SBIP03Result.txn_date == txn_date) | (SBIP03Result.bank_credit_date == txn_date))
+        return query
+
+    q = _common(db.query(SBIP03Result))
     if match_status: q = q.filter(SBIP03Result.match_status == match_status)
     total = q.count()
     from sqlalchemy import func as sqlfunc
-    summary_q = db.query(SBIP03Result.match_status, sqlfunc.count(SBIP03Result.id))
-    if recon_date: summary_q = summary_q.filter(SBIP03Result.recon_date == recon_date)
+    summary_q = _common(db.query(SBIP03Result.match_status, sqlfunc.count(SBIP03Result.id)))
     summary = {s: c for s, c in summary_q.group_by(SBIP03Result.match_status).all()}
     rows = q.order_by(SBIP03Result.csp_code).offset((page-1)*page_size).limit(page_size).all()
     data = [{k: getattr(r, k) for k in ('id','csp_code','mode','ref_number','txn_amount','txn_date','bank_credit_date','bank_amount','match_status','date_shift','match_priority','notes','recon_date')} for r in rows]
@@ -1028,12 +1053,14 @@ def get_p03_results(
 def get_p04_results(
     recon_date: Optional[str] = None,
     action_required: Optional[str] = None,
+    csp_code: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
 ):
     q = db.query(SBIP04Result)
     if recon_date:      q = q.filter(SBIP04Result.recon_date == recon_date)
     if action_required: q = q.filter(SBIP04Result.action_required == action_required)
+    if csp_code:        q = q.filter(SBIP04Result.csp_code.like(f"%{csp_code}%"))
     rows = q.order_by(SBIP04Result.csp_code).all()
     summary = {}
     for r in rows:
