@@ -49,6 +49,15 @@ router = APIRouter(prefix="/api/sbi", tags=["sbi-kiosk"])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _clip(v, n: int) -> str:
+    """Clip a string to a column's max length. MySQL ENFORCES VARCHAR lengths
+    (SQLite ignores them), so an over-long parsed value — e.g. a settlement
+    description leaking into ref_number — fails the whole upload on prod with
+    'Data too long for column …'. Clipping at ingest makes uploads robust on both."""
+    s = '' if v is None else str(v)
+    return s[:n] if n and len(s) > n else s
+
+
 def _sf(v, default=0.0) -> float:
     try:
         s = str(v).replace(',', '').strip()
@@ -183,18 +192,18 @@ async def upload_bank_statement(
             db.add(SBIBankTransaction(
                 id            = generate_id(),
                 upload_date   = today,
-                txn_date      = txn_date,
-                value_date    = value_date,
-                description   = desc,
-                ref_number    = ref_extracted or ref_no,
-                branch_code   = branch,
+                txn_date      = _clip(txn_date, 10),
+                value_date    = _clip(value_date, 10),
+                description   = desc,                            # Text — no length cap
+                ref_number    = _clip(ref_extracted or ref_no, 100),
+                branch_code   = _clip(branch, 20),
                 debit         = debit,
                 credit        = credit,
                 balance       = balance,
-                ko_id         = ko_id_extracted,
-                deduct_date   = deduct_date,
+                ko_id         = _clip(ko_id_extracted, 20),
+                deduct_date   = _clip(deduct_date, 10),
                 is_settlement = is_settlement,
-                txn_type      = _extract_txn_type_from_bank(desc),
+                txn_type      = _clip(_extract_txn_type_from_bank(desc), 30),
             ))
             inserted += 1
         except Exception as e:
