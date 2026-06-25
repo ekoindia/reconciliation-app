@@ -161,12 +161,17 @@ def ingest_dataframe(
     partially-inserted rows and marks the upload session failed, so a crashed
     ingest can never leave half a file in the transactions table.
     """
+    import time as _time
+    _t0 = _time.monotonic()
+    # roadmap 1.4: the auto/watch-folder channel (least-supervised) — WLR/FREC and
+    # slot/hash guards are NOT enforced here (known issue R2), so record that fact.
+    _channel = "watch_folder" if username in ("auto-upload", "openclaw-bot") else "auto"
     try:
-        return _ingest_dataframe_inner(
+        result = _ingest_dataframe_inner(
             df, session, mapping_dict, db, user_id, username,
             filter_column, filter_value, source_column, do_auto_recon,
         )
-    except Exception:
+    except Exception as _exc:
         db.rollback()
         try:
             session.status = UploadStatus.failed
@@ -174,7 +179,50 @@ def ingest_dataframe(
             db.commit()
         except Exception:
             db.rollback()
+        try:
+            from core.ingestion_ledger import record_ingestion_event
+            record_ingestion_event(
+                channel=_channel, status="failed",
+                partner=session.partner, side=session.side,
+                recon_date=session.recon_date, username=username,
+                filename=session.original_filename, upload_session_id=session.id,
+                wlr_frec="not_checked",
+                duration_ms=int((_time.monotonic() - _t0) * 1000),
+                detail={"error": str(_exc)[:500]},
+            )
+        except Exception:
+            pass
         raise
+
+    # ── Ingestion lineage ledger (roadmap 1.4 — additive, isolated txn) ──────────
+    try:
+        from core.ingestion_ledger import record_ingestion_event, sha256_of_file
+        _sha = _size = None
+        try:
+            from routes.upload import UPLOAD_DIR
+            _fp = os.path.join(UPLOAD_DIR, session.stored_filename or "")
+            if session.stored_filename and os.path.exists(_fp):
+                _sha, _size = sha256_of_file(_fp), os.path.getsize(_fp)
+        except Exception:
+            pass
+        _accepted = (result.get("row_count", 0) + result.get("fee_charge_count", 0)
+                     + result.get("settlement_credit_count", 0) + result.get("reversal_count", 0))
+        record_ingestion_event(
+            channel=_channel, status="completed",
+            partner=session.partner, side=session.side,
+            recon_date=session.recon_date, username=username,
+            filename=session.original_filename,
+            file_sha256=_sha, file_size=_size,
+            rows_read=int(len(df)),
+            rows_accepted=_accepted,
+            rows_skipped=result.get("skipped"),
+            wlr_frec="not_checked",
+            duration_ms=int((_time.monotonic() - _t0) * 1000),
+            upload_session_id=session.id,
+        )
+    except Exception:
+        pass
+    return result
 
 
 def _ingest_dataframe_inner(

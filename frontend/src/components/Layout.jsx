@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Upload, Play, AlertTriangle, GitMerge,
-  BarChart2, Users, LogOut, ChevronLeft, ChevronRight, BookOpen, Scale, Shield, AlertOctagon, Zap, Settings, TrendingUp
+  BarChart2, Users, LogOut, ChevronLeft, ChevronRight, BookOpen, Scale, Shield, AlertOctagon, Zap, Settings, TrendingUp, Activity
 } from 'lucide-react'
 import { hasPermission, isAdmin } from '../utils/permissions'
 
@@ -12,6 +12,7 @@ const navItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/upload',       icon: Upload,          label: 'Upload Files',  requiredPerm: 'upload' },
   { to: '/auto-upload',  icon: Zap,             label: 'Auto Upload',   requiredPerm: 'upload' },
+  { to: '/ingestion-monitor', icon: Activity,   label: 'Ingestion Monitor', requiredPerm: 'upload' },
   { to: '/run-recon',    icon: Play,            label: 'Run Recon',     requiredPerm: 'run_recon' },
   { to: '/open-items',   icon: AlertTriangle,   label: 'Open Items' },
   { to: '/mismatches',   icon: AlertOctagon,    label: 'Mismatches' },

@@ -437,6 +437,55 @@ class UploadHistory(Base):
     )
 
 
+class IngestionEvent(Base):
+    """
+    Append-only ingestion lineage ledger (roadmap 1.4 — additive).
+
+    One row per ingestion attempt across ALL channels (interactive upload and
+    watch-folder/auto-upload), capturing the file fingerprint, detected preset,
+    row accounting (read / accepted / skipped), WLR/FREC outcome, duration and
+    the resulting upload_session — so ingestion stops being a silent `skipped`
+    counter and failures on the least-supervised channels become visible.
+
+    Written by core.ingestion_ledger.record_ingestion_event() in its OWN
+    transaction so a logging failure can never block or roll back an ingest.
+    Never updated or deleted — append-only, like AuditLog. `upload_session_id`
+    is intentionally NOT a ForeignKey (additive rule: no cascade onto live
+    tables).
+    """
+    __tablename__ = "ingestion_events"
+
+    id                = Column(String(36),  primary_key=True, default=generate_id)
+    created_at        = Column(DateTime,    default=datetime.datetime.utcnow)
+    channel           = Column(String(20),  nullable=True)   # upload | watch_folder | auto | api
+    status            = Column(String(20),  nullable=True)   # completed | failed | blocked
+    partner           = Column(String(50),  nullable=True)
+    side              = Column(String(20),  nullable=True)
+    recon_date        = Column(String(20),  nullable=True)
+    username          = Column(String(100), nullable=True)
+    # File lineage
+    filename          = Column(String(500), nullable=True)
+    file_sha256       = Column(String(64),  nullable=True)
+    file_size         = Column(Integer,     nullable=True)
+    preset_detected   = Column(String(120), nullable=True)
+    # Row accounting (counters the ingest pipeline already computes)
+    rows_read         = Column(Integer,     nullable=True)
+    rows_accepted     = Column(Integer,     nullable=True)
+    rows_skipped      = Column(Integer,     nullable=True)
+    skip_breakdown    = Column(Text,        nullable=True)   # JSON {reason: count}; null until skip points instrumented
+    # Controls / outcome
+    wlr_frec          = Column(String(20),  nullable=True)   # passed | not_checked | n/a
+    duration_ms       = Column(Integer,     nullable=True)
+    upload_session_id = Column(String(36),  nullable=True)   # deliberately NOT a FK
+    detail            = Column(Text,        nullable=True)   # JSON blob — extra context / error message
+
+    __table_args__ = (
+        Index("ix_ingevt_created",         "created_at"),
+        Index("ix_ingevt_channel_status",  "channel", "status"),
+        Index("ix_ingevt_partner",         "partner"),
+    )
+
+
 class WatchFolderConfig(Base):
     """
     One row per upload type (fino/bank, fino/internal, airtel/bank, airtel/internal).

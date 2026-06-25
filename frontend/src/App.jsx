@@ -22,6 +22,7 @@ import Insights       from './pages/Insights'
 import Bbps           from './pages/Bbps'
 import ProductReconPage from './pages/ProductReconPage'
 import Workflow from './pages/Workflow'
+import IngestionMonitor from './pages/IngestionMonitor'
 import ErrorBoundary from './components/ErrorBoundary'
 
 function RequireAuth({ children }) {
@@ -57,6 +58,7 @@ export default function App() {
         <Route path="insights"        element={<Insights       />} />
         <Route path="product/:slug"   element={<ProductReconPage />} />
         <Route path="workflow"        element={<Workflow />} />
+        <Route path="ingestion-monitor" element={<IngestionMonitor />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

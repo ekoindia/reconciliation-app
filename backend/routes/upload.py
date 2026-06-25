@@ -1,5 +1,5 @@
 import logging
-import os, json, shutil, uuid, re, datetime
+import os, json, shutil, uuid, re, datetime, time
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Form
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -1208,6 +1208,8 @@ def confirm_mapping(
     if not session:
         raise HTTPException(status_code=404, detail="Upload session not found")
 
+    _ingest_t0 = time.monotonic()   # roadmap 1.4: ingestion-ledger duration timer
+
     # ── Hard-block re-upload (admin override only) ───────────────────────────
     # Duplicate ingests caused a real double-counting incident (Jun 2026). For a fixed-date slot that
     # already has data, block ingestion unless an admin explicitly passes force=true.
@@ -1220,6 +1222,20 @@ def confirm_mapping(
         if _existing > 0:
             _is_admin = getattr(current_user, "role", "") == "admin"
             if not (_is_admin and force):
+                # roadmap 1.4: record the blocked re-upload attempt (isolated txn)
+                try:
+                    from core.ingestion_ledger import record_ingestion_event
+                    record_ingestion_event(
+                        channel="upload", status="blocked",
+                        partner=session.partner, side=session.side,
+                        recon_date=session.recon_date, username=current_user.username,
+                        filename=session.original_filename, upload_session_id=session.id,
+                        wlr_frec="passed",
+                        duration_ms=int((time.monotonic() - _ingest_t0) * 1000),
+                        detail={"reason": "duplicate_slot_block", "existing_rows": _existing},
+                    )
+                except Exception:
+                    pass
                 raise HTTPException(
                     status_code=409,
                     detail=(f"{_existing} transactions already exist for "
@@ -1728,6 +1744,28 @@ def confirm_mapping(
                 )
         except Exception as _e:
             logger.warning(f"sev_cfg lookup: {_e}")
+
+    # ── Ingestion lineage ledger (roadmap 1.4 — additive, isolated txn) ──────────
+    # Reads counters already computed above; never alters the ingest result.
+    try:
+        from core.ingestion_ledger import record_ingestion_event, sha256_of_file
+        record_ingestion_event(
+            channel="upload", status="completed",
+            partner=session.partner, side=session.side,
+            recon_date=display_date, username=current_user.username,
+            filename=session.original_filename,
+            file_sha256=sha256_of_file(file_path),
+            file_size=(os.path.getsize(file_path) if os.path.exists(file_path) else None),
+            preset_detected=(_detect_bank_format(session.partner, session.side, df_columns) or {}).get("label"),
+            rows_read=int(len(df)),
+            rows_accepted=(txn_count + fee_count + cred_count + reversal_count),
+            rows_skipped=skipped,
+            wlr_frec="passed",   # WLR/FREC enforced at /upload/file before this point
+            duration_ms=int((time.monotonic() - _ingest_t0) * 1000),
+            upload_session_id=session.id,
+        )
+    except Exception:
+        pass
 
     return {
         "message": "Ingested successfully",
