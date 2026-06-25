@@ -1895,7 +1895,11 @@ def clear_data(
     side: Optional[str] = None,          # "bank" | "internal"
     recon_status: Optional[str] = None,  # "matched" | "unmatched" | "src_assigned" | "all"
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_permission("admin"))  # destructive — admin only
+    # Destructive — gated by the 'clear_data' permission ("Clear / Delete Data" in
+    # the Users screen). Admins short-circuit; non-admins need the toggle granted.
+    # (Previously hard-coded to admin-only, which ignored the clear_data permission
+    # that the UI/model already expose and admins assign — a wiring bug.)
+    current_user: User = Depends(require_permission("clear_data"))
 ):
     # ── Module products live in their own tables ──────────────────────────────
     if partner in _CLEAR_MODULE_OF:
