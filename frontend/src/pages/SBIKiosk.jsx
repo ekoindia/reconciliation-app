@@ -146,6 +146,8 @@ function P01Tab() {
   const [running, setRunning] = useState(false)
   const [data, setData] = useState(null)
   const [statusFilter, setStatusFilter] = useState('')
+  const [txnDate, setTxnDate] = useState('')
+  const [koSearch, setKoSearch] = useState('')
 
   const runRecon = async () => {
     setRunning(true)
@@ -159,10 +161,15 @@ function P01Tab() {
 
   const loadResults = useCallback(async () => {
     try {
-      const { data: d } = await api.get('/sbi/p01/results', { params: { recon_date: reconDate, ...(statusFilter && { status: statusFilter }) } })
+      const { data: d } = await api.get('/sbi/p01/results', { params: {
+        recon_date: reconDate,
+        ...(statusFilter && { status: statusFilter }),
+        ...(txnDate && { txn_date: txnDate }),
+        ...(koSearch && { ko_id: koSearch }),
+      } })
       setData(d)
     } catch { }
-  }, [reconDate, statusFilter])
+  }, [reconDate, statusFilter, txnDate, koSearch])
 
   useEffect(() => { loadResults() }, [loadResults])
 
@@ -175,24 +182,37 @@ function P01Tab() {
         bank settlement credits (EKOSETTLEMENT in bank statement). KO ID is the match key.
         D+1 logic: deduction date in description may differ from bank transaction date.
       </div>
-      <div className="flex items-center gap-3 mb-5">
+      <div className="flex items-end gap-3 mb-2 flex-wrap">
         <div>
-          <label className="text-xs text-gray-400 block mb-1">Recon Date</label>
+          <label className="text-xs text-gray-400 block mb-1">Recon Date <span className="text-gray-300">(run batch)</span></label>
           <input type="date" className="input" value={reconDate} onChange={e => setReconDate(e.target.value)} />
         </div>
-        <div className="self-end">
-          <button onClick={runRecon} disabled={running}
-            className="btn-primary flex items-center gap-2">
-            <Play size={14}/>{running ? 'Running…' : 'Run P01 Settlement Recon'}
-          </button>
+        <button onClick={runRecon} disabled={running} className="btn-primary flex items-center gap-2">
+          <Play size={14}/>{running ? 'Running…' : 'Run P01 Settlement Recon'}
+        </button>
+        <div className="w-px h-9 bg-gray-200 mx-1" />
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">Txn / Deduction Date</label>
+          <input type="date" className="input" value={txnDate} onChange={e => setTxnDate(e.target.value)} />
         </div>
-        <div className="self-end">
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">KO ID</label>
+          <input className="input w-32" placeholder="search KO…" value={koSearch} onChange={e => setKoSearch(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs text-gray-400 block mb-1">Status</label>
           <select className="select text-sm" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
             <option value="">All Statuses</option>
             {['CREDITED','PENDING','PARTIAL','EXCESS'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {(txnDate || koSearch || statusFilter) &&
+          <button onClick={() => { setTxnDate(''); setKoSearch(''); setStatusFilter('') }} className="btn-ghost text-xs">Clear filters</button>}
       </div>
+      <p className="text-xs text-gray-400 mb-5">
+        <strong>Recon Date</strong> labels the run (it reconciles everything uploaded today). The
+        <strong> Txn / Deduction Date</strong>, KO ID and Status fields filter what's shown below.
+      </p>
 
       {data && (
         <>
@@ -255,6 +275,8 @@ function P02Tab() {
   const [running, setRunning] = useState(false)
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
+  const [refSearch, setRefSearch] = useState('')
+  const [koSearch, setKoSearch] = useState('')
   const [mmModal, setMmModal] = useState(null)              // row being manually matched
   const [mmForm, setMmForm] = useState({ counterpart_ref: '', remark: '' })
   const [mmSaving, setMmSaving] = useState(false)
@@ -271,10 +293,15 @@ function P02Tab() {
 
   const loadResults = useCallback(async () => {
     try {
-      const { data: d } = await api.get('/sbi/p02/results', { params: { recon_date: reconDate, ...(filter && { match_status: filter }) } })
+      const { data: d } = await api.get('/sbi/p02/results', { params: {
+        recon_date: reconDate,
+        ...(filter && { match_status: filter }),
+        ...(refSearch && { reference: refSearch }),
+        ...(koSearch && { ko_id: koSearch }),
+      } })
       setData(d)
     } catch { }
-  }, [reconDate, filter])
+  }, [reconDate, filter, refSearch, koSearch])
 
   useEffect(() => { loadResults() }, [loadResults])
 
@@ -313,12 +340,21 @@ function P02Tab() {
             <Play size={14}/>{running ? 'Running…' : 'Run P02 Recon'}
           </button>
         </div>
+        <div className="w-px h-9 bg-gray-200 mx-1 self-end" />
+        <div className="self-end">
+          <input className="input w-40 text-sm" placeholder="reference…" value={refSearch} onChange={e => setRefSearch(e.target.value)} />
+        </div>
+        <div className="self-end">
+          <input className="input w-28 text-sm" placeholder="KO ID…" value={koSearch} onChange={e => setKoSearch(e.target.value)} />
+        </div>
         <div className="self-end">
           <select className="select text-sm" value={filter} onChange={e => setFilter(e.target.value)}>
             <option value="">All</option>
             {['Matched','Unmatched','Partial','Reversal'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {(refSearch || koSearch || filter) &&
+          <button onClick={() => { setRefSearch(''); setKoSearch(''); setFilter('') }} className="btn-ghost text-xs self-end">Clear</button>}
       </div>
 
       {data && (
@@ -421,6 +457,8 @@ function P03Tab() {
   const [running, setRunning] = useState(false)
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
+  const [cspSearch, setCspSearch] = useState('')
+  const [txnDate, setTxnDate] = useState('')
 
   const runRecon = async () => {
     setRunning(true)
@@ -434,10 +472,15 @@ function P03Tab() {
 
   const loadResults = useCallback(async () => {
     try {
-      const { data: d } = await api.get('/sbi/p03/results', { params: { recon_date: reconDate, ...(filter && { match_status: filter }) } })
+      const { data: d } = await api.get('/sbi/p03/results', { params: {
+        recon_date: reconDate,
+        ...(filter && { match_status: filter }),
+        ...(cspSearch && { csp_code: cspSearch }),
+        ...(txnDate && { txn_date: txnDate }),
+      } })
       setData(d)
     } catch { }
-  }, [reconDate, filter])
+  }, [reconDate, filter, cspSearch, txnDate])
 
   useEffect(() => { loadResults() }, [loadResults])
 
@@ -459,12 +502,21 @@ function P03Tab() {
             <Play size={14}/>{running ? 'Running…' : 'Run P03 Recon'}
           </button>
         </div>
+        <div className="w-px h-9 bg-gray-200 mx-1 self-end" />
+        <div className="self-end">
+          <input className="input w-32 text-sm" placeholder="CSP code…" value={cspSearch} onChange={e => setCspSearch(e.target.value)} />
+        </div>
+        <div className="self-end">
+          <input type="date" className="input text-sm" value={txnDate} onChange={e => setTxnDate(e.target.value)} title="Txn / bank-credit date" />
+        </div>
         <div className="self-end">
           <select className="select text-sm" value={filter} onChange={e => setFilter(e.target.value)}>
             <option value="">All</option>
             {['Matched','Unmatched_TxnReport','Unmatched_Bank'].map(s => <option key={s} value={s}>{s.replace('_',' ')}</option>)}
           </select>
         </div>
+        {(cspSearch || txnDate || filter) &&
+          <button onClick={() => { setCspSearch(''); setTxnDate(''); setFilter('') }} className="btn-ghost text-xs self-end">Clear</button>}
       </div>
 
       {data && (
@@ -526,6 +578,7 @@ function P04Tab({ onRefresh }) {
   const [running, setRunning] = useState(false)
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
+  const [cspSearch, setCspSearch] = useState('')
 
   const runRecon = async () => {
     setRunning(true)
@@ -539,10 +592,14 @@ function P04Tab({ onRefresh }) {
 
   const loadResults = useCallback(async () => {
     try {
-      const { data: d } = await api.get('/sbi/p04/results', { params: { recon_date: reconDate, ...(filter && { action_required: filter }) } })
+      const { data: d } = await api.get('/sbi/p04/results', { params: {
+        recon_date: reconDate,
+        ...(filter && { action_required: filter }),
+        ...(cspSearch && { csp_code: cspSearch }),
+      } })
       setData(d)
     } catch { }
-  }, [reconDate, filter])
+  }, [reconDate, filter, cspSearch])
 
   useEffect(() => { loadResults() }, [loadResults])
 
@@ -570,12 +627,18 @@ function P04Tab({ onRefresh }) {
             <Play size={14}/>{running ? 'Running…' : 'Run P04 Recon'}
           </button>
         </div>
+        <div className="w-px h-9 bg-gray-200 mx-1 self-end" />
+        <div className="self-end">
+          <input className="input w-32 text-sm" placeholder="CSP code…" value={cspSearch} onChange={e => setCspSearch(e.target.value)} />
+        </div>
         <div className="self-end">
           <select className="select text-sm" value={filter} onChange={e => setFilter(e.target.value)}>
             <option value="">All Actions</option>
             {['DEPOSIT','WITHDRAWAL','NONE'].map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
+        {(cspSearch || filter) &&
+          <button onClick={() => { setCspSearch(''); setFilter('') }} className="btn-ghost text-xs self-end">Clear</button>}
       </div>
 
       {data && data.rows.length === 0 && (
