@@ -11,8 +11,20 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from models.database import Base, IngestionEvent, WatchFolderConfig, ReconRun
+from models.database import Base, IngestionEvent, WatchFolderConfig, Transaction, ReconStatus
 from core.recon_health import compute_recon_health
+
+TODAY = datetime.datetime.utcnow().date().strftime("%Y-%m-%d")
+
+
+def _add_txns(db, n, open_count):
+    """n recent txn rows, `open_count` of them unmatched, the rest matched."""
+    for i in range(n):
+        st = ReconStatus.unmatched if i < open_count else ReconStatus.matched
+        db.add(Transaction(partner="fino", side="bank", recon_date=TODAY,
+                            row_type="txn", recon_status=st,
+                            eko_tid=f"T{i}", tracking_number=f"R{i}"))
+    db.commit()
 
 
 @pytest.fixture
@@ -71,20 +83,26 @@ def test_dq_warnings_counted(db):
 
 
 def test_low_match_rate_warns(db):
-    # 10 bank + 10 internal but only 2 matched → 20% < 50% threshold.
-    db.add(ReconRun(partner="fino", recon_date="2026-04-15",
-                    total_bank=10, total_internal=10, matched=2))
-    db.commit()
+    # 60 recent txns, 40 still open → 33% resolved < 50% threshold.
+    _add_txns(db, 60, open_count=40)
     c = _by_key(compute_recon_health(db), "match_rate")
     assert c["severity"] == "warn"
-    assert c["detail"]["rate"] == 0.2
+    assert c["detail"]["open"] == 40
+    assert c["detail"]["rate"] < 0.5
 
 
 def test_healthy_match_rate_ok(db):
-    db.add(ReconRun(partner="fino", recon_date="2026-04-15",
-                    total_bank=10, total_internal=10, matched=9))
-    db.commit()
+    # 60 recent txns, only 5 open → 92% resolved.
+    _add_txns(db, 60, open_count=5)
     assert _by_key(compute_recon_health(db), "match_rate")["severity"] == "ok"
+
+
+def test_match_rate_volume_guard_under_50_is_ok(db):
+    # Below the 50-row volume guard, never warn even if all are open.
+    _add_txns(db, 20, open_count=20)
+    c = _by_key(compute_recon_health(db), "match_rate")
+    assert c["severity"] == "ok"
+    assert c["detail"]["total"] == 20
 
 
 def test_old_events_outside_window_ignored(db):

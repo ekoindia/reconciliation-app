@@ -36,7 +36,7 @@ def _check(key, label, fn):
 
 def compute_recon_health(db, days: int = 7) -> dict:
     """Return a structured, read-only recon-health report over the last `days`."""
-    from models.database import IngestionEvent, WatchFolderConfig, ReconRun
+    from models.database import IngestionEvent, WatchFolderConfig
     since = datetime.datetime.utcnow() - datetime.timedelta(days=days)
 
     def _failed_ingests():
@@ -82,25 +82,37 @@ def compute_recon_health(db, days: int = 7) -> dict:
         return "warn", f"{n} ingest(s) with data-quality warnings in {days}d", {"count": n}
 
     def _match_rate():
-        runs = db.query(ReconRun).filter(ReconRun.run_at >= since).all()
-        if not runs:
-            return "ok", "No recon runs in window", {"runs": 0}
-        matched = sum(r.matched or 0 for r in runs)
-        expected = sum(min(r.total_bank or 0, r.total_internal or 0) for r in runs)
-        if expected == 0:
-            return "ok", "No matchable rows in window", {"runs": len(runs)}
-        rate = round(matched / expected, 4)
-        detail = {"runs": len(runs), "matched": matched, "expected": expected, "rate": rate}
+        # Compute over the CURRENT state of recently-dated txn rows, NOT ReconRun
+        # logs: ReconRun only records same-date run_reconciliation, so D+1 (QR),
+        # reversal, and internal-self matches it never sees read as 0% and would
+        # false-warn. Open = the Open-Items default {unmatched, src_assigned}
+        # (behavior-contract #14); everything else (matched / reversal_matched /
+        # fee_matched / duplicate / …) counts as resolved.
+        from models.database import Transaction, ReconStatus
+        cutoff = (datetime.datetime.utcnow().date()
+                  - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+        base = db.query(Transaction).filter(
+            Transaction.row_type == "txn",
+            Transaction.recon_date.like("____-__-__"),   # real dates only, skip 'auto'
+            Transaction.recon_date >= cutoff,
+        )
+        total = base.count()
+        if total < 50:   # volume guard — don't warn on a handful of rows
+            return "ok", f"Too few recent txns to assess ({total})", {"total": total}
+        open_n = base.filter(Transaction.recon_status.in_(
+            [ReconStatus.unmatched, ReconStatus.src_assigned])).count()
+        rate = round((total - open_n) / total, 4)
+        detail = {"total": total, "open": open_n, "resolved": total - open_n, "rate": rate}
         if rate < _MATCH_RATE_WARN:
-            return "warn", f"Recent match rate {round(rate * 100)}% (below {round(_MATCH_RATE_WARN * 100)}%)", detail
-        return "ok", f"Recent match rate {round(rate * 100)}%", detail
+            return "warn", f"Only {round(rate * 100)}% of recent txns reconciled ({open_n} open)", detail
+        return "ok", f"{round(rate * 100)}% of recent txns reconciled", detail
 
     checks = [
         _check("failed_ingests",  "Failed ingests",       _failed_ingests),
         _check("blocked_ingests", "Blocked re-uploads",   _blocked_ingests),
         _check("watch_folders",   "Watch folders",        _watch_folders),
         _check("dq_warnings",     "Data-quality warnings", _dq_warnings),
-        _check("match_rate",      "Recon match rate",     _match_rate),
+        _check("match_rate",      "Reconciliation rate",  _match_rate),
     ]
     status = max((c["severity"] for c in checks), key=lambda s: _RANK.get(s, 0))
     return {"status": status, "window_days": days, "checks": checks}
