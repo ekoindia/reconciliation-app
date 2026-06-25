@@ -63,10 +63,11 @@ def test_stale_delivery(db):
     assert s["days_since"] == 3
 
 
-def test_partner_never_delivered(db):
-    # A watch folder is configured (so it's a known source) but it has never
-    # delivered — must show 'never', not be absent.
+def test_core_partner_side_never_delivered(db):
+    # Airtel is a core partner (delivered on internal) but its configured bank
+    # side has never delivered → that side shows 'never', not absent.
     _partner(db, "airtel")
+    _delivery(db, "airtel", "airtel", "internal", NOW)        # makes airtel a core partner
     db.add(WatchFolderConfig(label="Airtel Bank", partner="airtel", side="bank",
                              is_enabled=True))
     db.commit()
@@ -75,10 +76,13 @@ def test_partner_never_delivered(db):
     assert s["last_delivered_at"] is None
 
 
-def test_module_partner_without_transactions_is_not_listed(db):
-    # Module products store data in their own tables (never Transaction) and have
-    # no watch config — they must NOT appear as a misleading 'never' source.
+def test_module_partner_with_watch_but_no_transactions_excluded(db):
+    # A module product (evalue) with a watch config but NO Transaction delivery must
+    # NOT appear — it stores data elsewhere, so 'never' here would be misleading.
     _partner(db, "evalue")
+    db.add(WatchFolderConfig(label="E-Value", partner="evalue", side="bank",
+                             is_enabled=True))
+    db.commit()
     r = compute_sources(db)
     assert all(s["partner"] != "evalue" for s in r["sources"])
 
@@ -93,6 +97,7 @@ def test_mixed_dump_credits_each_partner(db):
 
 def test_watch_folder_status_surfaced(db):
     _partner(db, "fino")
+    _delivery(db, "fino", "fino", "bank", NOW)        # fino is a core partner
     db.add(WatchFolderConfig(label="Fino Bank", partner="fino", side="bank",
                              is_enabled=True, last_trigger_status="not_found"))
     db.commit()
@@ -105,8 +110,9 @@ def test_summary_counts(db):
     _partner(db, "fino")
     _delivery(db, "fino", "fino", "bank", NOW)            # delivered
     _delivery(db, "fino", "fino", "internal", NOW - datetime.timedelta(days=2))  # stale
+    _delivery(db, "airtel", "airtel", "internal", NOW)   # airtel core (delivered)
     db.add(WatchFolderConfig(label="Airtel Bank", partner="airtel", side="bank",
-                             is_enabled=True))            # configured, never delivered
+                             is_enabled=True))            # core partner side, never delivered
     db.commit()
     r = compute_sources(db)
     assert r["summary"]["delivered_today"] >= 1

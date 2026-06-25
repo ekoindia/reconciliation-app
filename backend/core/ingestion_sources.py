@@ -52,14 +52,16 @@ def compute_sources(db) -> dict:
     except Exception:
         pass
 
-    # Sources are exactly the (partner, side) pairs that flow through the core
-    # Transaction pipeline: ones that have actually delivered (Transaction join)
-    # or have an auto watch-folder configured. We deliberately do NOT pad this from
-    # the full PartnerConfig list — module products (E-Value, BBPS, SBI, PG, AePS/QR
-    # settlement) store their data in their OWN tables, never touch Transaction, and
-    # would otherwise show a misleading "never delivered" here. PartnerConfig is used
-    # only to resolve friendly labels.
-    keys = set(last_by_key) | set(watch_by_key)
+    # A partner belongs to the core Transaction pipeline only if it has delivered
+    # through it at least once. Module products (E-Value, BBPS, SBI, PG, AePS/QR
+    # settlement) store data in their OWN tables, never touch Transaction — and some
+    # of them ALSO have watch-folder configs — so a watch config alone is not proof.
+    # Restricting to partners seen in the Transaction join keeps module products
+    # (which would otherwise show a misleading "never delivered") out of this view;
+    # their watch-config sides are then included so an un-delivered side of a real
+    # core partner still shows. PartnerConfig is used only for labels.
+    core_partners = {p for (p, _s) in last_by_key}
+    keys = set(last_by_key) | {k for k in watch_by_key if k[0] in core_partners}
     labels = {}
     try:
         for p in db.query(PartnerConfig).all():
