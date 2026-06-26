@@ -274,12 +274,12 @@ async def upload_ko_limits(
             db.add(SBIKOLimits(
                 id                  = generate_id(),
                 upload_date         = today,
-                txn_datetime        = raw_dt,
-                txn_date            = _nd(raw_dt[:10] if raw_dt else ''),
-                limit_configured_by = _clean(row.get('Limit Configured By', '')),
-                ko_id               = _clean(row.get('KO ID', '')),
+                txn_datetime        = _clip(raw_dt, 30),
+                txn_date            = _clip(_nd(raw_dt[:10] if raw_dt else ''), 10),
+                limit_configured_by = _clip(_clean(row.get('Limit Configured By', '')), 20),
+                ko_id               = _clip(_clean(row.get('KO ID', '')), 20),
                 opening_limit       = _sf(row.get('Opening Limit')),
-                txn_type            = txn_type,
+                txn_type            = _clip(txn_type, 30),
                 amount              = _sf(row.get('Amount')),
                 closing_limit       = _sf(row.get('Closing Limit')),
             ))
@@ -339,20 +339,20 @@ async def upload_txn_report(
             db.add(SBITxnReport(
                 id              = generate_id(),
                 upload_date     = today,
-                source_file     = source,
-                ko_id           = gv(row, 'ko_id'),
-                txn_datetime    = raw_dt,
-                txn_date        = txn_date,
-                reference_number= gv(row, 'reference_number'),
-                txn_type        = gv(row, 'type_of_transaction'),
-                from_account    = gv(row, 'from_account'),
-                to_account      = gv(row, 'to_account'),
+                source_file     = _clip(source, 100),
+                ko_id           = _clip(gv(row, 'ko_id'), 20),
+                txn_datetime    = _clip(raw_dt, 30),
+                txn_date        = _clip(txn_date, 10),
+                reference_number= _clip(gv(row, 'reference_number'), 100),
+                txn_type        = _clip(gv(row, 'type_of_transaction'), 80),
+                from_account    = _clip(gv(row, 'from_account'), 30),
+                to_account      = _clip(gv(row, 'to_account'), 30),
                 amount          = _sf(row.get(gc('amount'), 0)),
                 customer_charge = _sf(row.get(gc('customer_charge'), 0)),
-                journal_number  = gv(row, 'journal_number'),
-                status          = gv(row, 'status'),
-                reversal_status = gv(row, 'reversal_status'),
-                settlement_acct = gv(row, 'settelment_account_'),
+                journal_number  = _clip(gv(row, 'journal_number'), 30),
+                status          = _clip(gv(row, 'status'), 20),
+                reversal_status = _clip(gv(row, 'reversal_status'), 20),
+                settlement_acct = _clip(gv(row, 'settelment_account_'), 20),
                 ko_holding      = _sf(row.get(gc('ko_holding'), None)),
             ))
             inserted += 1
@@ -394,9 +394,9 @@ async def upload_csp_master(
         db.add(SBICSPMaster(
             id          = generate_id(),
             upload_date = today,
-            csp_code    = csp,
-            ref_number  = _clean(row.get('Ref.. Number', '') or row.get('Ref Number', '')),
-            mode        = _clean(row.get('Mood', '') or row.get('Mode', '')),
+            csp_code    = _clip(csp, 20),
+            ref_number  = _clip(_clean(row.get('Ref.. Number', '') or row.get('Ref Number', '')), 100),
+            mode        = _clip(_clean(row.get('Mood', '') or row.get('Mode', '')), 30),
         ))
         inserted += 1
 
@@ -434,8 +434,8 @@ async def upload_ko_cash_holding(
         db.add(SBIKOCashHolding(
             id              = generate_id(),
             upload_date     = today,
-            report_date     = r_date,
-            ko_id           = ko,
+            report_date     = _clip(r_date, 10),
+            ko_id           = _clip(ko, 20),
             limit           = _sf(row.get('Limit')),
             opening_balance = _sf(row.get('Opening Balance')),
             cash_receipts   = _sf(row.get('Cash Receipts')),
@@ -482,11 +482,11 @@ async def upload_limit_failures(
             db.add(SBILimitFailure(
                 id          = generate_id(),
                 upload_date = today,
-                txn_date    = _nd(row[1]),
-                csp_code    = row[2].strip(),
-                bc_id       = row[3].strip(),
+                txn_date    = _clip(_nd(row[1]), 10),
+                csp_code    = _clip(row[2].strip(), 20),
+                bc_id       = _clip(row[3].strip(), 20),
                 amount      = _sf(row[4]),
-                user        = row[5].strip() if len(row) > 5 else '',
+                user        = _clip(row[5].strip() if len(row) > 5 else '', 50),
             ))
             inserted += 1
         except Exception as _e:
