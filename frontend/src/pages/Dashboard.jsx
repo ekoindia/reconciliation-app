@@ -557,7 +557,7 @@ function PGSettlementPanel({ dateRange }) {
               <tbody>
                 {rows.map(r => (
                   <tr key={r.date} className="border-b border-gray-50 hover:bg-purple-50 cursor-pointer"
-                    onClick={() => window.location.href = `/open-items?partner=pg&recon_date=${r.date}&recon_status=all`}>
+                    onClick={() => window.location.href = `${import.meta.env.BASE_URL}open-items?partner=pg&recon_date=${r.date}&recon_status=all`}>
                     <td className="py-2 px-2 font-mono">{r.date}</td>
                     <td className="py-2 px-2 text-right">{r.txn_count.toLocaleString()}</td>
                     <td className="py-2 px-2 text-right text-gray-600">{fmt(r.gross_total)}</td>

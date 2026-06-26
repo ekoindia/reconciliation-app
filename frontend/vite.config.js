@@ -9,6 +9,11 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   const apiTarget = env.VITE_API_TARGET || 'http://localhost:8000'
   return {
+    // Production build is served under /recon behind nginx (http://host/recon/);
+    // Vite rewrites every asset URL to sit under it and the React Router basename
+    // in main.jsx is derived from the same value, so routing stays in lockstep.
+    // Local `npm run dev` stays at root so direct :3000 access is unaffected.
+    base: mode === 'production' ? '/recon/' : '/',
     plugins: [react()],
     server: {
       port: 3000,

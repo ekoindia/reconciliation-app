@@ -1364,7 +1364,7 @@ export default function Upload({ forcedProduct = null, embedded = false }) {
               <div>
                 <div className="font-semibold mb-0.5">SEV Skipped</div>
                 <div>{ingestResult.sev_notice}</div>
-                <a href="/admin" className="underline mt-1 inline-block">Configure in Settings →</a>
+                <a href={`${import.meta.env.BASE_URL}admin`} className="underline mt-1 inline-block">Configure in Settings →</a>
               </div>
             </div>
           )}
@@ -1372,7 +1372,7 @@ export default function Upload({ forcedProduct = null, embedded = false }) {
           <p className="text-sm text-gray-500 mb-6">Transactions are ready for reconciliation.</p>
           <div className="flex gap-3 justify-center">
             <button onClick={reset} className="btn-ghost">Upload Another</button>
-            <a href="/run-recon" className="btn-primary">Run Recon →</a>
+            <a href={`${import.meta.env.BASE_URL}run-recon`} className="btn-primary">Run Recon →</a>
           </div>
         </div>
       )}
