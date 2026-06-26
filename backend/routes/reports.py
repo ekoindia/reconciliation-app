@@ -34,6 +34,35 @@ def _apply_partner(q, partner):
     slugs = _partner_slugs(partner)
     return q.filter(Transaction.partner.in_(slugs)) if slugs else q
 
+
+def _module_export_row(d: dict) -> dict:
+    """Map a module-adapter open-items row (E-Value / BBPS) to the export columns —
+    identical in shape and order to the core-ledger mapper below. Module products
+    have no human-override workflow, so those two columns stay blank."""
+    side = d.get("side")
+    return {
+        "Partner":          d.get("partner"),
+        "Side":             side,
+        "Recon Date":       d.get("recon_date"),
+        "Transaction Date": d.get("transaction_date"),
+        "Recon Status":     d.get("recon_status"),
+        "Row Type":         d.get("row_type") or "txn",
+        "Eko TID":          d.get("eko_tid")         or "",
+        "Tracking Number":  d.get("tracking_number") or "",
+        "UTR Number":       d.get("utr_number")      or "",
+        "Amount":           d.get("amount"),
+        "DR/CR":            d.get("dr_cr")           or "",
+        "Txn Status":       d.get("status")          or "",
+        "Match ID":         d.get("match_id")        or "",
+        "SRC Code":         d.get("src_code")        or "",
+        "SRC Note":         d.get("src_note")        or "",
+        "Override By":      "",
+        "Override Note":    "",
+        "Bank Description": (d.get("bank_description") or "") if side == "bank" else "",
+        "CSP Code":         (d.get("csp_code") or "") if side == "internal" else "",
+        "CSP Name":         (d.get("csp_name") or "") if side == "internal" else "",
+    }
+
 @router.get("/open-items/export")
 def export_open_items(
     partner:          Optional[str] = None,
@@ -54,6 +83,9 @@ def export_open_items(
     bank_description: Optional[str] = None,   # substring search over bank narration
     csp_code:         Optional[str] = None,   # substring search over CSP code (internal rows)
     csp_name:         Optional[str] = None,   # substring search over CSP name (internal rows)
+    amount_min:       Optional[float] = None,
+    amount_max:       Optional[float] = None,
+    bank_account:     Optional[str] = None,   # filter core bank rows by source account
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("reports"))
 ):
@@ -65,6 +97,27 @@ def export_open_items(
     # Resolve date alias: date_from takes precedence over from_date
     _date_from = date_from or from_date
     _date_to   = date_to   or to_date
+
+    # Module products (E-Value, BBPS) live in their OWN tables, not Transaction.
+    # Mirror the Open Items list endpoint (recon.get_open_items) so the export
+    # always matches what's on screen:
+    #   • module partner (evalue/bbps) → that module's rows only
+    #   • Partner = All (no partner)   → core ledger + every module product
+    #   • core partner (fino/dmt/…)    → core ledger only
+    from routes.recon import _module_rows, _all_module_rows, _MODULE_OPEN
+    _mod_filters = dict(recon_date=recon_date, date_from=_date_from, date_to=_date_to,
+                        side=side, recon_status=recon_status, eko_tid=eko_tid,
+                        tracking_number=tracking_number, match_id=match_id,
+                        amount_min=amount_min, amount_max=amount_max, aging=aging,
+                        bank_description=bank_description, csp_code=csp_code, csp_name=csp_name)
+    _is_module = partner in _MODULE_OPEN
+    _is_all    = (not partner) or str(partner).lower() == "all"
+    if _is_module:
+        module_rows = _module_rows(partner, db=db, **_mod_filters)
+    elif _is_all:
+        module_rows = _all_module_rows(db, **_mod_filters)
+    else:
+        module_rows = []
 
     q = db.query(Transaction)
 
@@ -100,6 +153,12 @@ def export_open_items(
         q = q.filter(Transaction.csp_code.ilike(f"%{csp_code}%"))
     if csp_name:
         q = q.filter(Transaction.csp_name.ilike(f"%{csp_name}%"))
+    if bank_account:
+        q = q.filter(Transaction.bank_account == bank_account)
+    if amount_min is not None:
+        q = q.filter(Transaction.amount >= amount_min)
+    if amount_max is not None:
+        q = q.filter(Transaction.amount <= amount_max)
 
     # Date: single date takes precedence over range
     if recon_date:
@@ -131,7 +190,9 @@ def export_open_items(
         elif aging == "d7":
             q = q.filter(Transaction.recon_date <= str(today - _dt.timedelta(days=4)))
 
-    txns = q.order_by(Transaction.recon_date, Transaction.partner, Transaction.side).all()
+    # Core rows are skipped for a module-only partner (its data isn't in Transaction).
+    txns = [] if _is_module else q.order_by(
+        Transaction.recon_date, Transaction.partner, Transaction.side).all()
 
     rows = [{
         "Partner":          t.partner,
@@ -157,6 +218,8 @@ def export_open_items(
         "CSP Code":         (getattr(t, "csp_code", "") or "") if t.side == "internal" else "",
         "CSP Name":         (getattr(t, "csp_name", "") or "") if t.side == "internal" else "",
     } for t in txns]
+    # Append module-product rows (E-Value / BBPS) so the export mirrors the list.
+    rows.extend(_module_export_row(d) for d in module_rows)
 
     df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[
         "Partner","Side","Recon Date","Transaction Date","Recon Status","Row Type",
