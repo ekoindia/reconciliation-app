@@ -29,7 +29,7 @@ export default class ErrorBoundary extends React.Component {
             </p>
             <p className="text-xs text-gray-400 font-mono mb-5 break-all">{String(this.state.error?.message || this.state.error)}</p>
             <div className="flex items-center justify-center gap-3">
-              <button onClick={() => { this.setState({ error: null }); window.location.href = '/dashboard' }}
+              <button onClick={() => { this.setState({ error: null }); window.location.href = import.meta.env.BASE_URL + 'dashboard' }}
                 className="btn-primary text-sm">Go to Dashboard</button>
               <button onClick={() => window.location.reload()}
                 className="btn-ghost text-sm">Reload page</button>

@@ -58,7 +58,9 @@ api.interceptors.response.use(
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      window.location.href = '/login'
+      // BASE_URL carries the nginx subpath (e.g. /recon/) so this lands on
+      // /recon/login, not a 404 at the server root.
+      window.location.href = import.meta.env.BASE_URL + 'login'
     }
     return Promise.reject(err)
   }

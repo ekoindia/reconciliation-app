@@ -5,8 +5,13 @@ import { Toaster } from 'react-hot-toast'
 import App from './App'
 import './index.css'
 
+// The app is served under a base path behind nginx (Vite `base`, e.g. /recon/).
+// Derive the router basename from it so every route resolves under the subpath;
+// at root (base "/") this collapses to "/" so nothing changes in plain dev.
+const BASENAME = import.meta.env.BASE_URL.replace(/\/+$/, '') || '/'
+
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <BrowserRouter>
+  <BrowserRouter basename={BASENAME}>
     <App />
     <Toaster
       position="top-right"
