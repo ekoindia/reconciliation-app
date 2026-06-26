@@ -692,6 +692,28 @@ def _run_aeps_integrity_comparison(record: PIIntegrityCheck):
 
 
 def _aeps_integrity_dict(record: PIIntegrityCheck) -> dict:
+    # Build the status message None-safely and ONLY for the selected status. The
+    # previous version put all four f-strings in a dict literal, so they were ALL
+    # evaluated eagerly — and a PENDING record (cw_amount / tplus_amount = None)
+    # crashed the whole endpoint on `{None:,.2f}`, 500-ing the AePS page.
+    def _f(v, comma=True):
+        if not isinstance(v, (int, float)):
+            return "—"
+        return f"{v:,.2f}" if comma else f"{v:.2f}"
+    st = record.status
+    if st == "passed":
+        msg = (f"AS=SD PASSED: Fingpay ₹{_f(record.cw_amount)} matches T Plus "
+               f"₹{_f(record.tplus_amount)} (diff ₹{_f(record.difference, comma=False)}).")
+    elif st == "failed":
+        msg = (f"AS=SD FAILED: Fingpay ₹{_f(record.cw_amount)} ≠ T Plus "
+               f"₹{_f(record.tplus_amount)} (diff ₹{_f(record.difference, comma=False)}). "
+               f"Investigate before settlement.")
+    elif st == "pending_cw":
+        msg = "Waiting for AePS Fingpay cw-success-failure file for this date."
+    elif st == "pending_tplus":
+        msg = "Waiting for T Plus settlement report for this date."
+    else:
+        msg = ""
     return {
         "partner":          record.partner,
         "recon_date":       record.recon_date,
@@ -703,12 +725,7 @@ def _aeps_integrity_dict(record: PIIntegrityCheck) -> dict:
         "tplus_uploaded_at":str(record.tplus_uploaded_at) if record.tplus_uploaded_at else None,
         "status":           record.status,
         "difference":       record.difference,
-        "message": {
-            "pending_cw":     "Waiting for AePS Fingpay cw-success-failure file for this date.",
-            "pending_tplus":  "Waiting for T Plus settlement report for this date.",
-            "passed":         f"AS=SD PASSED: Fingpay ₹{record.cw_amount:,.2f} matches T Plus ₹{record.tplus_amount:,.2f} (diff ₹{record.difference:.2f}).",
-            "failed":         f"AS=SD FAILED: Fingpay ₹{record.cw_amount:,.2f} ≠ T Plus ₹{record.tplus_amount:,.2f} (diff ₹{record.difference:.2f}). Investigate before settlement.",
-        }.get(record.status, ""),
+        "message":          msg,
     }
 
 
