@@ -1912,6 +1912,58 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
     return _apply_pairs(db, entries)
 
 
+def analytics_pair_deltas(db, date_from=None, date_to=None):
+    """For the analytics dashboard ONLY: per business-date count + ₹ of SBI **P02 'Unmatched'
+    bank rows** that an operator manual PAIR reconciles.
+
+    The dashboard reads the P01–P04 result tables directly and so never sees SBIManualPair —
+    unlike the unified SBI Kiosk page and the downloadable report, which apply `_apply_pairs`
+    at read time. Without this, doing manual matches never moves the dashboard's unmatched
+    count (operator-reported: "auto-match left 30, manual-matched them, still 30"). This
+    returns the delta the dashboard subtracts from P02 unmatched (and adds to matched) so the
+    three readers agree.
+
+    Cheap and divergence-proof: it recomputes each candidate row's bank-side key with the SAME
+    `_pair_key`/`_row_disc`/`_clean_refno` used by `_apply_pairs`, over only the (few thousand)
+    P02 'Unmatched' rows — never the full unified entry set. Read-only; SBI-only; a no-op that
+    returns {} when no pairs exist, so the dashboard stays byte-identical until the first pair.
+
+    Scope: every manual pair to date closes a P02 'Bank Statement' unmatched bank row (the
+    pair-picker's dominant flow); the data leg is a KO Deposit / already-matched Txn Report
+    with no *open* P0x result row, so P01/P03 deltas are structurally zero and not computed
+    here. If a future pair closes an open P01/P03 row this simply under-counts (the dashboard
+    stays conservative — it never over-reduces unmatched). Pinned by test_analytics_sbi_pairs.
+    Returns {date10: {"count": int, "amount": float}}.
+    """
+    from models.database import SBIManualPair, SBIP02Result, SBIBankTransaction
+    bank_keys = {k for (k,) in db.query(SBIManualPair.bank_key).all() if k}
+    if not bank_keys:
+        return {}
+    q = (db.query(SBIP02Result.id, SBIP02Result.recon_date, SBIP02Result.bank_amount,
+                  SBIBankTransaction)
+           .join(SBIBankTransaction, SBIP02Result.bank_txn_id == SBIBankTransaction.id)
+           .filter(SBIP02Result.match_status == "Unmatched"))
+    if date_from:
+        q = q.filter(SBIP02Result.recon_date >= date_from)
+    if date_to:
+        q = q.filter(SBIP02Result.recon_date <= date_to)
+    out, seen = {}, set()
+    for rid, rd, bamt, b in q.all():
+        if rid in seen:
+            continue
+        src = "Bank Settlement" if b.is_settlement else "Bank Statement"
+        drcr = "DR" if (b.debit or 0) > 0 else ("CR" if (b.credit or 0) > 0 else "")
+        amt = (b.debit or 0) if (b.debit or 0) > 0 else (b.credit or 0)
+        key = _pair_key("bank", src, b.ko_id, _clean_refno(b.ref_number),
+                        b.txn_date, drcr, amt, _row_disc(src, b))
+        if key in bank_keys:
+            seen.add(rid)
+            slot = out.setdefault((rd or "")[:10], {"count": 0, "amount": 0.0})
+            slot["count"] += 1
+            slot["amount"] = round(slot["amount"] + float(bamt or 0), 2)
+    return out
+
+
 @router.get("/unified")
 def get_unified(
     recon_date: str,

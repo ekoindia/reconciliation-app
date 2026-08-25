@@ -92,34 +92,39 @@ def _pretty(product: str) -> str:
         product, product.replace("_", " ").title())
 
 
-def _kiosk_processes(db, date_from=None, date_to=None):
+def _kiosk_processes(db, date_from=None, date_to=None, pair_delta_p02=None):
     """Per-process summary for the 4 SBI Kiosk reconciliations (P01–P04), for the expandable
     breakdown under SBI Kiosk on the analytics dashboard.
 
     ADDITIVE and isolated: it is NOT folded into `totals`/`by_group` (kiosk there stays P02,
     the primary bank↔txn recon) — so the exec + main dashboards stay in sync and no other
-    product/process is affected. Read-only over the P0x result tables."""
+    product/process is affected. Read-only over the P0x result tables.
+
+    `pair_delta_p02` = {"count", "amount"}: operator manual PAIRS that reconcile P02 unmatched
+    bank rows (from routes.sbi_kiosk.analytics_pair_deltas). The result tables still mark those
+    rows 'Unmatched', so without this the P02 row here (and the headline) ignore manual matches.
+    Applied to P02 only; None/absent → byte-identical to before."""
     from sqlalchemy import func as F
     from models.database import SBIP01Result, SBIP02Result, SBIP03Result, SBIP04Result
-    # (label, model, status column, amount column, status→bucket map)
+    # (process key, label, model, status column, amount column, status→bucket map)
     specs = [
-        ("P01 · Settlement",     SBIP01Result, SBIP01Result.status,         SBIP01Result.bank_settled,
+        ("p01", "P01 · Settlement",     SBIP01Result, SBIP01Result.status,         SBIP01Result.bank_settled,
          # two-state since 2026-07-27; legacy values folded for old rows
          {"matched": "matched", "unmatched": "unmatched",
           "credited": "matched", "pending": "unmatched", "partial": "unmatched", "excess": "unmatched"}),
-        ("P02 · Bank ↔ Txn",     SBIP02Result, SBIP02Result.match_status,    SBIP02Result.bank_amount,
+        ("p02", "P02 · Bank ↔ Txn",     SBIP02Result, SBIP02Result.match_status,    SBIP02Result.bank_amount,
          # a reversal is a net-zero DR+CR pair → reconciled, counted as matched (Kiosk decision);
          # a settlement debit reconciles in P01 → "matched (settlement)" is matched, and
          # "unmatched settlement" (pending P01, D+1/D+2) is neither matched nor a customer open item.
          {"matched": "matched", "matched (settlement)": "matched", "unmatched": "unmatched",
           "unmatched settlement": "other", "partial": "mismatch", "reversal": "matched"}),
-        ("P03 · Money out ↔ in", SBIP03Result, SBIP03Result.match_status,    SBIP03Result.txn_amount,
+        ("p03", "P03 · Money out ↔ in", SBIP03Result, SBIP03Result.match_status,    SBIP03Result.txn_amount,
          {"matched": "matched", "unmatched_txnreport": "unmatched", "unmatched_bank": "unmatched"}),
-        ("P04 · Wallet balance", SBIP04Result, SBIP04Result.action_required, SBIP04Result.action_amount,
+        ("p04", "P04 · Wallet balance", SBIP04Result, SBIP04Result.action_required, SBIP04Result.action_amount,
          {"none": "matched", "deposit": "other", "withdrawal": "other"}),
     ]
     out = []
-    for label, model, statuscol, amtcol, bmap in specs:
+    for pkey, label, model, statuscol, amtcol, bmap in specs:
         q = db.query(statuscol, F.count(model.id), F.sum(amtcol))
         if date_from:
             q = q.filter(model.recon_date >= date_from)
@@ -138,6 +143,16 @@ def _kiosk_processes(db, date_from=None, date_to=None):
             if b == "other":
                 lbl = _status_label(st)
                 other_st[lbl] = other_st.get(lbl, 0) + (n or 0)
+        # Reflect operator manual PAIRS on P02: move pair-closed rows unmatched → matched, so
+        # this breakdown agrees with the unified page + report (which apply _apply_pairs).
+        if pkey == "p02" and pair_delta_p02:
+            mv = min(int(pair_delta_p02.get("count", 0) or 0), v["unmatched"])
+            if mv:
+                av = float(pair_delta_p02.get("amount", 0.0) or 0.0)
+                v["unmatched"] -= mv
+                v["matched"]   += mv
+                v["open_volume"]    = round(v["open_volume"] - av, 2)
+                v["matched_volume"] = round(v["matched_volume"] + av, 2)
         denom = v["matched"] + v["unmatched"] + v["mismatch"]
         out.append({"process": label, **v,
                     "transactions": v["matched"] + v["unmatched"] + v["mismatch"] + v["other"],
@@ -303,6 +318,19 @@ def build_analytics(db, date_from=None, date_to=None, product=None, side=None):
             recs.append(("evalue", sd, d[:10], _statv(status), cnt or 0, float(amt or 0)))
 
     # ── 3. SBI Kiosk — P02 (bank statement ↔ transaction report) main matching ─
+    # Operator manual PAIRS reconcile P02 'Unmatched' bank rows, but the result table still
+    # marks them 'Unmatched' (the pair lives in SBIManualPair, applied at read time by the
+    # unified page + report, never here). Fetch the per-date delta so the dashboard reflects
+    # manual matching — otherwise manual-matching never moves the unmatched count. SBI-only;
+    # {} when no pairs → recs byte-identical to before.
+    _pair_delta = {}
+    if product in (None, "", "kiosk"):
+        try:
+            from routes.sbi_kiosk import analytics_pair_deltas
+            _pair_delta = analytics_pair_deltas(db, date_from, date_to) or {}
+        except Exception:
+            logger.warning("analytics: SBI manual-pair delta skipped", exc_info=True)
+            _pair_delta = {}
     sq = db.query(SBIP02Result.recon_date, SBIP02Result.match_status,
                   F.count(SBIP02Result.id), F.sum(SBIP02Result.bank_amount))
     if date_from:
@@ -310,10 +338,23 @@ def build_analytics(db, date_from=None, date_to=None, product=None, side=None):
     if date_to:
         sq = sq.filter(SBIP02Result.recon_date <= date_to)
     for d, status, cnt, amt in sq.group_by(SBIP02Result.recon_date, SBIP02Result.match_status).all():
-        if not _in_range((d or "")[:10]):
+        d10 = (d or "")[:10]
+        if not _in_range(d10):
             continue
-        # P02 result rows pair bank↔report; treat as the kiosk product (no side split).
-        recs.append(("sbi_kiosk", "bank", d[:10], status, cnt or 0, float(amt or 0)))
+        cnt = cnt or 0
+        amt = float(amt or 0)
+        # Split off the manual-pair-reconciled slice of this date's Unmatched into a matched
+        # ('Manual_Matched') rec, so every downstream roll-up (totals/by_group/by_product/
+        # daily/by_side) reflects it consistently. P02 result rows pair bank↔report; treat as
+        # the kiosk product (no side split).
+        if str(status) == "Unmatched" and _pair_delta.get(d10):
+            mc = min(int(_pair_delta[d10]["count"]), cnt)
+            ma = min(float(_pair_delta[d10]["amount"]), amt) if amt > 0 else float(_pair_delta[d10]["amount"])
+            if mc > 0:
+                recs.append(("sbi_kiosk", "bank", d10, "Manual_Matched", mc, ma))
+                cnt -= mc
+                amt = round(amt - ma, 2)
+        recs.append(("sbi_kiosk", "bank", d10, status, cnt, amt))
 
     # ── 4. BBPS (if populated) — column is transaction_date, not txn_date ──────
     if BbpsBankTxn is not None:
@@ -503,7 +544,11 @@ def build_analytics(db, date_from=None, date_to=None, product=None, side=None):
         "products": prod_options,
         # Additive: the 4 SBI Kiosk process recons (P01–P04) for the expandable breakdown.
         # NOT part of totals/by_group, so headline numbers are unchanged.
-        "kiosk_processes": _kiosk_processes(db, date_from, date_to) if product in (None, "", "kiosk") else [],
+        "kiosk_processes": _kiosk_processes(
+            db, date_from, date_to,
+            pair_delta_p02={"count": sum(int(v["count"]) for v in _pair_delta.values()),
+                            "amount": round(sum(float(v["amount"]) for v in _pair_delta.values()), 2)},
+        ) if product in (None, "", "kiosk") else [],
         # Additive: ageing of open (unmatched) items — count + ₹ per age bucket.
         "open_ageing": _open_ageing(db, date_from, date_to),
     }
