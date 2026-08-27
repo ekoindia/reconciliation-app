@@ -86,26 +86,33 @@ SPA. One container is the whole app.
 
 ```mermaid
 flowchart TB
-    subgraph client["Browser · React 18 SPA"]
-        pages["Pages<br/>Upload · Open Items · Reports · Admin"]
-        apijs["utils/api.js<br/>axios · JWT header · 401→login · UTC→IST"]
+    subgraph client["Browser — React 18 SPA"]
+        pages["Pages<br/>Upload · Open Items · Reports · Product modules · Admin"]
+        apijs["utils/api.js<br/>axios · JWT · 401→login · UTC→IST · error-detail flattening"]
     end
 
-    subgraph backend["FastAPI backend — single process"]
-        routes["routes/<br/>upload · recon · reports · product modules · admin"]
+    subgraph backend["FastAPI backend — one process, one container"]
+        routes["routes/<br/>upload · recon · reports · product modules · admin · observability"]
         core["core/ engines<br/>matching · E-Value · BBPS · ingest · auth · maker-checker"]
+        ai["core/ai_client<br/>advisory only · human-approved"]
         sched["APScheduler (Asia/Kolkata)<br/>watch-folder · auto-recon · EOD digest · subscriptions"]
+        obs["Ingestion ledger + health<br/>fingerprints · row counts · data-quality"]
         models["models/database.py<br/>45 models · idempotent migrations · startup seeders"]
     end
 
     db[("Database<br/>SQLite · MySQL · PostgreSQL")]
     watch[/"Watch folder<br/>auto-upload"/]
     smtp{{"SMTP<br/>reports · escalations"}}
+    llm{{"LLM provider<br/>Anthropic · OpenAI-compatible · local model"}}
 
     pages --> apijs
     apijs -->|"HTTP /api"| routes
     routes --> core
+    routes --> obs
+    core --> ai
+    ai -.->|"de-identified fields only"| llm
     core --> models
+    obs --> models
     models --> db
     watch --> sched
     sched --> core
@@ -124,6 +131,69 @@ backend/   FastAPI + SQLAlchemy
   core/     engines: matching, E-Value, BBPS, ingestion, scheduler, auth
   models/   database.py — all models, idempotent migrations, seeders
   instance/ deployment-specific data (gitignored)
+```
+
+### How a file becomes reconciled
+
+Every upload runs the same pipeline: the file is parsed and checked against the slot it was
+dropped into, its rows are classified and given stable identifiers, and an **auto-recon chain**
+runs immediately — its step order is load-bearing, because each pass consumes rows the next one
+would otherwise mis-handle. Whatever the matcher can't pair lands in **Open Items** for a human.
+
+```mermaid
+flowchart TB
+    file[/"Bank statement or internal dump<br/>CSV · XLSX · PDF · TSV"/]
+    parse["Parse · auto header detection · preview"]
+    guard{"FREC / WLR<br/>right file for this slot?"}
+    reject[/"422 — wrong file, hard-blocked"/]
+    confirm{"Slot guard + SHA-256 hash<br/>already uploaded?"}
+    dup[/"409 — duplicate, blocked"/]
+    classify["Per-row classify · extract identifiers<br/>(order-sensitive regex ladder) · per-partner fan-out"]
+    chain["Auto-recon chain — order matters:<br/>reversal → run_reconciliation → NEFT D+1 → internal self-match"]
+    matcher["Core matcher, per (partner, recon_date)<br/>priority rules · first-match-wins"]
+    tol{"Amount within ±₹1?"}
+    matched(["matched<br/>id = PREFIX-YYYYMMDD-NNNN"])
+    mism(["amount_mismatch"])
+    unm(["unmatched → Open Items"])
+
+    file --> parse --> guard
+    guard -->|no| reject
+    guard -->|yes| confirm
+    confirm -->|yes| dup
+    confirm -->|no| classify --> chain --> matcher --> tol
+    tol -->|yes| matched
+    tol -->|no| mism
+    matcher -.->|"no counterpart"| unm
+```
+
+### Transaction status lifecycle
+
+A row is auto-classified on ingest, then an operator can act on anything the engine left open —
+manual-match, tag a disposition code (SRC), or override with a mandatory remark. Every disposition
+is a **read-time overlay keyed by stable business content**, so it survives a re-run or re-upload;
+where maker-checker is enabled, a second user approves before it's final.
+
+```mermaid
+stateDiagram-v2
+    [*] --> classified: ingest + auto-classify
+    classified --> matched: rule engine (auto)
+    classified --> amount_mismatch: counterpart found, beyond ±₹1
+    classified --> unmatched: no counterpart
+    classified --> reversal_matched: DR+CR net-zero pair
+    classified --> fund_transfer: settlement credit (auto-closed)
+
+    unmatched --> matched: manual match / override + remark
+    amount_mismatch --> matched: override + remark
+    unmatched --> src_assigned: assign SRC (disposition)
+    src_assigned --> unmatched: remove SRC
+    fund_transfer --> unmatched: remove from fund transfer
+
+    matched --> pending: maker-checker (if enabled)
+    pending --> matched: approved
+    pending --> unmatched: rejected
+
+    matched --> [*]
+    reversal_matched --> [*]
 ```
 
 Deep dives: [docs/architecture.md](docs/architecture.md) · [docs/behavior-contract.md](docs/behavior-contract.md) · [docs/known-issues.md](docs/known-issues.md) · [docs/sbi-kiosk.md](docs/sbi-kiosk.md)
