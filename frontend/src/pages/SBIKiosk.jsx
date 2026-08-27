@@ -1457,6 +1457,12 @@ function ManualPairTab({ reconDate }) {
   const koDeposits = dataItems.filter(r => r.source === 'KO Deposit' && amtMatch(r))
   const leftItems = mode === 'ko' ? koWithdrawals : shownBank
   const rightItems = mode === 'ko' ? koDeposits : shownData
+  // Data-side breakdown — KO Deposits appear ONLY in this picker (for KO↔KO pairing), never in
+  // the All Entries view, so this count legitimately runs higher there. Spelling it out here
+  // stops "Manual Match shows more open items than All Entries" reading as a data bug.
+  const dataDeposits    = shownData.filter(r => r.source === 'KO Deposit').length
+  const dataWithdrawals = shownData.filter(r => r.source === 'KO Withdrawal').length
+  const dataReports     = shownData.length - dataDeposits - dataWithdrawals
 
   const addPair = () => {
     if (!selBank || !selData) { toast('Select one row on each side', { icon: 'ℹ️' }); return }
@@ -1540,6 +1546,7 @@ function ManualPairTab({ reconDate }) {
           subtitle={mode === 'bank_data' && shownBank.length ? `Matches the reconciliation report's open bank items · ${bankWithRef} with a bank reference · ${bankNoRef} cash-deposit / no-reference` : undefined}
           selected={selBank} onSelect={setSelBank} queuedIds={queuedIds} />
         <PairPanel title={mode === 'ko' ? 'KO Deposit' : 'Internal / Data'} tone="text-green-700 bg-green-50/60 border-green-100" items={rightItems}
+          subtitle={mode === 'bank_data' && shownData.length ? `${dataReports} txn-report · ${dataWithdrawals} KO withdrawal · ${dataDeposits} KO deposit — KO Deposits show only here (KO↔KO pairing), so this runs higher than All Entries` : undefined}
           filterValue={mode === 'bank_data' ? dataFile : undefined} filterOptions={mode === 'bank_data' ? dataFiles : undefined} onFilterChange={mode === 'bank_data' ? setDataFile : undefined}
           selected={selData} onSelect={setSelData} queuedIds={queuedIds} />
       </div>
