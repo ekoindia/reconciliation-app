@@ -153,13 +153,14 @@ def test_double_link_rejected(db):
     assert "already" in out["results"][0]["error"].lower()
 
 
-def test_ko_deposit_available_in_picker_but_not_in_unified_page(db):
+def test_ko_deposit_shows_open_in_both_picker_and_unified(db):
+    # An unpaired KO Deposit is a real open counterpart (594/600 manual pairs use one), so it now
+    # counts as open in BOTH the pair-picker AND the All Entries view — the two must never disagree.
     _ko(db, txn_type="KO Deposit")
-    # visible to the pair-picker
     picker = manual_pair_open_items(side="data", date_from=DATE, db=db, current_user=USER)
     assert any(e["file"] == "KO Deposit" for e in picker["items"])
-    # but NOT added to the unified page / all-entries report (include_deposits stays False)
-    assert all(r["source"] != "KO Deposit" for r in _unified_rows(db))
+    dep = [r for r in _unified_rows(db) if r["source"] == "KO Deposit"]
+    assert len(dep) == 1 and dep[0]["status"] == "Unmatched"
 
 
 def test_pair_leaves_unrelated_rows_untouched(db):
@@ -253,20 +254,19 @@ def test_ko_deposit_cannot_be_paired_twice(db):
     assert "already" in out["results"][0]["error"].lower()
 
 
-def test_report_open_bank_credit_shows_even_when_unified_ghost_matched(db):
-    """Rajendra 2026-08: a bank CREDIT the unified view marks 'Matched' via the weak (csp,amount)
-    P03 overlay, but which the reconciliation report leaves Unmatched (its 20-digit ref isn't in
-    any source file), must STILL appear in the pair-picker's bank side — the report is the source
-    of truth there, so a report-open row is a real open item even if the unified status says
-    Matched. (It was being hidden by the picker's status-closed filter.)"""
+def test_report_open_bank_credit_reads_open_in_both_unified_and_picker(db):
+    """Rajendra 2026-08: a bank CREDIT weak-matched via the (csp,amount) P03 overlay, but which the
+    reconciliation report leaves Unmatched (its 20-digit ref isn't in any source file), must read
+    OPEN in BOTH the All Entries view and the pair-picker — the report is the source of truth, and
+    a weak match must never hide a real open bank item on either screen (they must agree)."""
     REF = "62101614158300006350"                  # a 20-digit bank ref, not in any source file
     _bank(db, REF, ko="CSP1", credit=15000.0)      # money-IN credit
     db.add(SBIP03Result(recon_date=DATE, csp_code="CSP1", txn_amount=15000.0,
                         bank_amount=15000.0, match_status="Matched")); db.commit()
-    # unified view ghost-matches it via (csp, amount)
+    # All Entries now aligns to the report — the weak P03 match no longer hides it
     bank_row = next(r for r in _unified_rows(db) if r["ref"] == REF and r["side"] == "bank")
-    assert bank_row["status"] == "Matched"
-    # ...but the report leaves it Unmatched, so the picker MUST list it as an open bank item
+    assert bank_row["status"] == "Unmatched"
+    # ...and the picker lists it too — both screens agree it is open
     pick = manual_pair_open_items(side="bank", date_from=DATE, db=db, current_user=USER)
     assert any(e["ref"] == REF for e in pick["items"])
 

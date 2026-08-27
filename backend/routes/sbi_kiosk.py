@@ -1902,12 +1902,19 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
                      result_process="p01", _result=r)
         entries.append(e)
 
-    # ---- data side: KO deposits (pair-picker only; OFF for the unified page + report) ----
+    # ---- data side: KO deposits (added when include_deposits=True) ----
+    # A KO Deposit has no P0x result of its own — it's the counterpart operators pair a bank row
+    # or a KO Withdrawal against (594 of 600 manual pairs use one). So an UNPAIRED deposit is a
+    # genuine open item: give it 'Unmatched' so it counts as open wherever deposits are included
+    # (the All Entries view + the pair-picker). _apply_pairs below flips a paired one to
+    # Manual_Matched, so only the truly-open deposits stay Unmatched.
     if include_deposits and want_data:
         for w in db.query(SBIKOLimits).filter(SBIKOLimits.txn_type == "KO Deposit",
                                               SBIKOLimits.txn_date == recon_date).all():
-            entries.append(_new("data", "KO Deposit", w.id, "", w.ko_id, w.amount or 0, w.txn_date, "", "KO Deposit",
-                                disc=_row_disc("KO Deposit", w)))
+            e = _new("data", "KO Deposit", w.id, "", w.ko_id, w.amount or 0, w.txn_date, "", "KO Deposit",
+                     disc=_row_disc("KO Deposit", w))
+            e["status"] = "Unmatched"
+            entries.append(e)
 
     return _apply_pairs(db, entries)
 
@@ -1987,7 +1994,29 @@ def get_unified(
     P03 has no source FK, so P03 links are best-effort on CSP+amount.
     Sources by the transaction's BUSINESS date (recon_date == txn_date), matching the runs.
     """
-    entries = _unified_entries(db, recon_date, include_deposits=False)
+    # Count open items the SAME way the Manual Match pair-picker does, so the two screens never
+    # disagree for a date: (1) include KO Deposits — an unpaired deposit is a real open counterpart;
+    # (2) align the bank side to the reconciliation report (below). All Entries then equals Manual
+    # Match: report-open bank + open withdrawals + open deposits.
+    entries = _unified_entries(db, recon_date, include_deposits=True)
+
+    # Bank align to the report (exactly the pair-picker's rule): a credit weak-matched via the
+    # (csp/ko, amount) P03 overlay but left OPEN by the reconciliation report reads Unmatched here
+    # too — the report (20-digit ref) is the finance-ops source of truth, and a weak match must not
+    # hide a real open bank item. p01/p02 (reliable) matches and manual pairs are trusted as-is.
+    try:
+        if db.query(SBIBankTransaction.id).filter(SBIBankTransaction.txn_date == recon_date).first() is None:
+            _report_open = frozenset()
+        else:
+            _report_open = _picker_report_open_ids(db, recon_date)   # cached; == reconcile()'s bank-open set
+    except Exception:
+        logger.warning(f"unified: report align skipped for {recon_date}", exc_info=True)
+        _report_open = None
+    if _report_open is not None:
+        for e in entries:
+            if (e["side"] == "bank" and e["status"] in _MATCHED_UNIFIED
+                    and e.get("result_process") == "p03" and e["id"] in _report_open):
+                e["status"], e["process"], e["counterpart"] = "Unmatched", "", None
 
     # ---- filters ----
     if side:    entries = [e for e in entries if e["side"] == side]
