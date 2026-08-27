@@ -100,3 +100,58 @@ def test_remove_src_on_deposit(db):
     remove_src(SBISRCRemoveIn(process="kod", result_id=w.id), db=db, current_user=USER)
     assert db.query(SBISrcAssignment).count() == 0
     assert next(r for r in _rows(db) if r["source"] == "KO Deposit")["src_code"] is None
+
+
+# ── P01 fan-out: the operator-reported bug ────────────────────────────────────
+# "1 transaction pe SRC tag kar rha hu to dusre transaction me automatic SRC tag ho ja rha hai."
+# Two KO Withdrawals of the SAME KO on the SAME day share ONE P01 result (P01 is a KO-DAY
+# aggregate), whose SRC key was just `ko_id` — so tagging one tagged the other. Withdrawals and
+# settlements now carry their own per-ROW namespace ('kow'/'bst') keyed on row content.
+from models.database import SBIP01Result, SBIBankTransaction
+
+
+def _wdl(db, amount, ko="1A999005", dt=None):
+    w = SBIKOLimits(id=generate_id(), upload_date=DATE, txn_date=DATE, txn_datetime=dt,
+                    ko_id=ko, txn_type="KO Withdrawal", amount=amount)
+    db.add(w); db.commit(); return w
+
+
+def test_tagging_one_ko_withdrawal_does_not_tag_its_sibling(db):
+    ko = "1A999005"
+    w1 = _wdl(db, 300.0, ko, dt="2026-08-25 09:00:00")
+    _wdl(db, 38350.0, ko, dt="2026-08-25 14:00:00")       # same KO, same day — the reported pair
+    db.add(SBIP01Result(id=generate_id(), recon_date=DATE, ko_id=ko,
+                        wallet_withdrawn=38650.0, bank_settled=0.0, status="unmatched"))
+    db.commit()
+
+    rows = [r for r in _rows(db) if r["source"] == "KO Withdrawal"]
+    assert len(rows) == 2
+    assert all(r["src_process"] == "kow" for r in rows)     # per-row namespace, not p01
+    assert rows[0]["src_id"] != rows[1]["src_id"]
+
+    assign_src(SBISRCIn(process="kow", result_id=w1.id, src_code="OTHER", src_note=None),
+               db=db, current_user=USER)
+
+    after = [r for r in _rows(db) if r["source"] == "KO Withdrawal"]
+    tagged = [r for r in after if r["src_code"]]
+    assert len(tagged) == 1                                  # ONLY the one we tagged
+    assert float(tagged[0]["amount"]) == 300.0
+
+
+def test_tagging_one_settlement_does_not_tag_its_sibling(db):
+    ko = "1A999005"
+    for amt, bal in ((5000.0, 111.0), (7000.0, 222.0)):      # two settlements, same KO+day
+        db.add(SBIBankTransaction(id=generate_id(), upload_date=DATE, txn_date=DATE,
+                                  description="EKO DEDUCTION", ref_number="", ko_id=ko,
+                                  debit=amt, credit=0.0, balance=bal, is_settlement=True,
+                                  deduct_date=DATE))
+    db.add(SBIP01Result(id=generate_id(), recon_date=DATE, ko_id=ko,
+                        wallet_withdrawn=0.0, bank_settled=12000.0, status="unmatched"))
+    db.commit()
+
+    setl = [r for r in _rows(db) if r["source"] == "Bank Settlement"]
+    assert len(setl) == 2 and all(r["src_process"] == "bst" for r in setl)
+    assign_src(SBISRCIn(process="bst", result_id=setl[0]["src_id"], src_code="OTHER", src_note=None),
+               db=db, current_user=USER)
+    after = [r for r in _rows(db) if r["source"] == "Bank Settlement"]
+    assert sum(1 for r in after if r["src_code"]) == 1        # exactly one

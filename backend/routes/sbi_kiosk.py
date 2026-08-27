@@ -1831,7 +1831,12 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
                 "file": file or src,   # fine-grained originating file/report (Txn Report → canonical product)
                 "status": "Not reconciled", "process": "", "counterpart": None, "also_p03": False,
                 "result_id": None, "result_process": None, "src_code": None, "src_note": None,
-                "manual_pair_id": None, "_disc": disc, "_result": None}
+                # SRC identity is SEPARATE from result_process on purpose: a P01 result covers a
+                # whole KO-DAY, so tagging via it fans out across every sibling row. Rows that own
+                # a physical source line (KO withdrawal/deposit, bank settlement) get their own
+                # per-row namespace + content key here; everything else falls back to its result.
+                "src_process": None, "src_id": None,
+                "manual_pair_id": None, "_disc": disc, "_result": None, "_srckey": None}
 
     # ---- bank side ----
     for b in (db.query(SBIBankTransaction).filter(SBIBankTransaction.txn_date == recon_date).all() if want_bank else []):
@@ -1840,6 +1845,9 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
         if b.is_settlement:
             e = _new("bank", "Bank Settlement", b.id, _clean_refno(b.ref_number), b.ko_id, amt, b.txn_date, drcr, b.description,
                      disc=_row_disc("Bank Settlement", b))
+            # tag THIS settlement line, not the KO-day P01 aggregate it reconciles in
+            e["src_process"], e["src_id"] = "bst", b.id
+            e["_srckey"] = _src_key("bst", {c.name: getattr(b, c.name) for c in b.__table__.columns})
             # settlement reconciles under its business (deduct) date, not the posting date;
             # per-row: matched iff THIS settlement's amount paired in P01 (partial-day aware)
             bd = b.deduct_date or recon_date
@@ -1894,6 +1902,9 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
                                            SBIKOLimits.txn_date == recon_date).all() if want_data else []):
         e = _new("data", "KO Withdrawal", w.id, "", w.ko_id, w.amount or 0, w.txn_date, "", "KO Withdrawal",
                  disc=_row_disc("KO Withdrawal", w))
+        # tag THIS withdrawal line, not the KO-day P01 aggregate (which every sibling shares)
+        e["src_process"], e["src_id"] = "kow", w.id
+        e["_srckey"] = _src_key("kow", {c.name: getattr(w, c.name) for c in w.__table__.columns})
         r = p01_by_ko.get(w.ko_id)
         if r:
             # per-row: this withdrawal is matched iff its amount paired in P01 (partial-day aware)
@@ -1918,6 +1929,8 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
             # taggable and selectable — instead of a dead row the operator can't touch.
             e["status"] = "Unmatched"
             e["result_process"], e["result_id"], e["_result"] = "kod", w.id, w
+            e["src_process"], e["src_id"] = "kod", w.id
+            e["_srckey"] = _src_key("kod", {c.name: getattr(w, c.name) for c in w.__table__.columns})
             entries.append(e)
 
     return _apply_pairs(db, entries)
@@ -2043,14 +2056,24 @@ def get_unified(
           SBISrcAssignment.recon_date == recon_date).all()}
     for e in page_rows:
         r = e.pop("_result", None)
-        if r is not None and e["result_process"]:
+        # Rows owning a physical source line carry their own per-row namespace + key (set at build
+        # time); everything else falls back to its P0x result's key. Never key a source row via a
+        # P01 result — that is the KO-day aggregate and the tag would fan out to its siblings.
+        skey = e.pop("_srckey", None)
+        if e.get("src_process") and skey:
+            proc, key = e["src_process"], skey
+        elif r is not None and e["result_process"]:
             rd = {c.name: getattr(r, c.name) for c in r.__table__.columns}
-            key = _src_key(e["result_process"], rd)
-            a = sa.get((e["result_process"], key)) if key else None
-            if a:
-                e["src_code"], e["src_note"] = a.src_code, a.src_note
-    for e in entries:                # drop the non-serialisable ref on any non-page rows
+            proc, key = e["result_process"], _src_key(e["result_process"], rd)
+            e["src_process"], e["src_id"] = e["result_process"], e["result_id"]
+        else:
+            proc = key = None
+        a = sa.get((proc, key)) if (proc and key) else None
+        if a:
+            e["src_code"], e["src_note"] = a.src_code, a.src_note
+    for e in entries:                # drop the non-serialisable refs on any non-page rows
         e.pop("_result", None)
+        e.pop("_srckey", None)
 
     return {"rows": page_rows, "total": total, "page": page, "page_size": page_size,
             "status_counts": status_counts, "side_counts": side_counts,
@@ -3006,17 +3029,30 @@ def _src_key(process: str, row: dict):
         return f"{csp or ''}|{ref or ''}" if (csp or ref) else None
     if p == "p04":
         return row.get("csp_code") or None
-    if p == "kod":
-        # A KO DEPOSIT source row (SBIKOLimits). It has no P01–P04 result of its own — it is the
-        # counterpart operators pair against — but it IS a real open item in the unified view, so
-        # it must be taggable. Key on stable CONTENT (ko + amount + date + the row's datetime),
-        # which survives recon re-runs AND file re-uploads — strictly better than a surrogate id.
+    if p in ("kod", "kow"):
+        # A KO DEPOSIT / KO WITHDRAWAL **source** row (SBIKOLimits), tagged PER ROW.
+        # 'kod' has no P0x result at all; 'kow' exists to escape P01's fan-out — a P01 result is
+        # one KO-DAY aggregate, so all of a KO's withdrawals share `ko_id` as their key and tagging
+        # one would tag every other withdrawal of that KO on that date (operator-reported).
+        # Key on stable CONTENT (ko + amount + date + the row's datetime): unique per row, and it
+        # survives recon re-runs AND file re-uploads — strictly better than a surrogate id.
         try:
             amt = f"{float(row.get('amount') or 0):.2f}"
         except (TypeError, ValueError):
             amt = "0.00"
         ko, d, dt = row.get("ko_id") or "", row.get("txn_date") or "", row.get("txn_datetime") or ""
-        return f"kod|{ko}|{amt}|{d}|{dt}" if (ko or d) else None
+        return f"{p}|{ko}|{amt}|{d}|{dt}" if (ko or d) else None
+    if p == "bst":
+        # A BANK SETTLEMENT source row (SBIBankTransaction), tagged PER ROW — same escape from the
+        # P01 KO-day fan-out as 'kow'. Uses the statement's running balance as the per-line
+        # discriminator (the same one _pair_key/_row_disc use for bank rows).
+        try:
+            amt = f"{float(row.get('debit') or 0) or float(row.get('credit') or 0):.2f}"
+        except (TypeError, ValueError):
+            amt = "0.00"
+        ko, d = row.get("ko_id") or "", row.get("txn_date") or ""
+        ref, bal = row.get("ref_number") or "", row.get("balance")
+        return f"bst|{ko}|{ref}|{d}|{amt}|{'' if bal is None else bal}" if (ko or d or ref) else None
     return None
 
 
@@ -3241,6 +3277,7 @@ def manual_pair_open_items(
                     report_open_ids = None   # fail open — fall back to the raw unified set
         for e in _unified_entries(db, d, include_deposits=True, sides={side}):
             e.pop("_result", None)
+            e.pop("_srckey", None)
             if e["side"] != side:
                 continue
             # A manual pair already reconciled the row (both legs) — exclude on BOTH sides. The
@@ -3505,6 +3542,11 @@ def list_manual_pairs(
 
 # ── SRC disposition (overlay; parity with core-ledger /recon/assign-src) ───────
 _SRC_MODELS = {"p01": SBIP01Result, "p02": SBIP02Result, "p03": SBIP03Result, "p04": SBIP04Result}
+# SOURCE-row namespaces: tag one physical source row instead of a P0x result. Needed where a
+# result row covers MANY source rows — a P01 result is one KO-DAY, so keying a withdrawal or a
+# settlement by `ko_id` tags every sibling row of that KO (operator-reported fan-out). These key
+# on stable row CONTENT, so a tag lands on exactly one row and survives re-runs + re-uploads.
+_SRC_SOURCE_NS = {"kod", "kow", "bst"}
 
 
 def _src_target(db, process, result_id):
@@ -3519,12 +3561,22 @@ def _src_target(db, process, result_id):
                       business date is the row's txn_date.
     """
     p = (process or "").lower()
-    if p == "kod":
+    if p in ("kod", "kow"):
+        want = "KO Deposit" if p == "kod" else "KO Withdrawal"
         row = (db.query(SBIKOLimits)
-                 .filter(SBIKOLimits.id == result_id, SBIKOLimits.txn_type == "KO Deposit").first())
+                 .filter(SBIKOLimits.id == result_id, SBIKOLimits.txn_type == want).first())
         if not row:
             return None
         rd = {c.name: getattr(row, c.name) for c in SBIKOLimits.__table__.columns}
+        key = _src_key(p, rd)
+        return (rd, row.txn_date, key) if key else None
+    if p == "bst":
+        row = (db.query(SBIBankTransaction)
+                 .filter(SBIBankTransaction.id == result_id,
+                         SBIBankTransaction.is_settlement == True).first())   # noqa: E712
+        if not row:
+            return None
+        rd = {c.name: getattr(row, c.name) for c in SBIBankTransaction.__table__.columns}
         key = _src_key(p, rd)
         return (rd, row.txn_date, key) if key else None
     model = _SRC_MODELS.get(p)
@@ -3554,8 +3606,9 @@ def assign_src(
     """Tag an SBI result row with an SRC code + note. Persists across re-runs (overlay)."""
     from routes.recon import is_valid_src_code
     p = (body.process or "").lower()
-    if p not in _SRC_MODELS and p != "kod":
-        raise HTTPException(status_code=400, detail="process must be one of p01..p04 or kod")
+    if p not in _SRC_MODELS and p not in _SRC_SOURCE_NS:
+        raise HTTPException(status_code=400,
+                            detail="process must be one of p01..p04 or " + "/".join(sorted(_SRC_SOURCE_NS)))
     if not is_valid_src_code(db, body.src_code):
         raise HTTPException(status_code=400, detail=f"Invalid SRC code: {body.src_code}")
     target = _src_target(db, p, body.result_id)

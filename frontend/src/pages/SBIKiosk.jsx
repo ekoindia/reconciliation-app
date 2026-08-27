@@ -1145,13 +1145,15 @@ function UnifiedTab({ reconDate, setReconDate, onJumpToPair }) {
   // status / process / side / search filters first). SRC is a disposition for open
   // items, so matched rows are excluded. Each row carries its result process + id,
   // which is what the SBI overlay assign-src-bulk needs.
-  const taggable = rows.filter(r => r.result_process && r.result_id && (r.status || '').startsWith('Unmatched'))
+  // SRC uses src_process/src_id (per-ROW identity), never result_process — a P01 result is a
+  // KO-DAY aggregate, so tagging through it would fan out across every sibling row of that KO.
+  const taggable = rows.filter(r => r.src_process && r.src_id && (r.status || '').startsWith('Unmatched'))
   const applyBulkSrc = async () => {
     if (!bulkCode || bulkCode === '__none__') return toast.error('Pick a reason code')
     if (!taggable.length) return
     setBulkBusy(true)
     try {
-      const items = taggable.map(r => ({ process: r.result_process, result_id: r.result_id }))
+      const items = taggable.map(r => ({ process: r.src_process, result_id: r.src_id }))
       const { data: res } = await api.post('/sbi/assign-src-bulk', { items, src_code: bulkCode, src_note: bulkNote.trim() })
       toast.success(`Tagged ${res.updated} row${res.updated === 1 ? '' : 's'}` + (res.skipped ? ` · ${res.skipped} skipped` : ''))
       setBulkOpen(false); setBulkCode(''); setBulkNote(''); load()
@@ -1159,13 +1161,13 @@ function UnifiedTab({ reconDate, setReconDate, onJumpToPair }) {
     finally { setBulkBusy(false) }
   }
   // Bulk REMOVE: clear the SRC tag from every tagged row currently in view.
-  const removable = rows.filter(r => r.result_process && r.result_id && r.src_code)
+  const removable = rows.filter(r => r.src_process && r.src_id && r.src_code)
   const applyBulkRemoveSrc = async () => {
     if (!removable.length) return toast.error('No SRC-tagged rows in view')
     if (!window.confirm(`Remove SRC from ${removable.length} tagged row(s) in view?`)) return
     setBulkBusy(true)
     try {
-      const items = removable.map(r => ({ process: r.result_process, result_id: r.result_id }))
+      const items = removable.map(r => ({ process: r.src_process, result_id: r.src_id }))
       const { data: res } = await api.post('/sbi/remove-src-bulk', { items })
       toast.success(`Removed SRC from ${res.removed} row${res.removed === 1 ? '' : 's'}` + (res.skipped ? ` · ${res.skipped} skipped` : ''))
       setBulkOpen(false); load()
@@ -1289,7 +1291,8 @@ function UnifiedTab({ reconDate, setReconDate, onJumpToPair }) {
                                   date: r.date, amount: r.amount })}
                                   title="Open Manual Match filtered to this row's date and amount"
                                   className="text-[11px] text-primary hover:underline">match</button>}
-                              <button onClick={() => setSrcModal(r)} className="text-[11px] text-yellow-700 hover:underline">src</button>
+                              {r.src_process && r.src_id &&
+                                <button onClick={() => setSrcModal(r)} className="text-[11px] text-yellow-700 hover:underline">src</button>}
                             </span>
                           : '—'}
                       </td>
@@ -1304,8 +1307,8 @@ function UnifiedTab({ reconDate, setReconDate, onJumpToPair }) {
         </>
       )}
 
-      {srcModal && <SrcModal process={srcModal.result_process} procLabel={`SBI ${(srcModal.result_process || '').toUpperCase()}`}
-        row={{ ...srcModal, id: srcModal.result_id }} onClose={() => setSrcModal(null)} onDone={() => { setSrcModal(null); load() }}
+      {srcModal && <SrcModal process={srcModal.src_process} procLabel={`SBI ${(srcModal.src_process || '').toUpperCase()}`}
+        row={{ ...srcModal, id: srcModal.src_id }} onClose={() => setSrcModal(null)} onDone={() => { setSrcModal(null); load() }}
         summary={<>{srcModal.side} · <span className="font-mono">{srcModal.ref || srcModal.ko_csp}</span> · {fmtINR(srcModal.amount)}.</>} />}
       {mmModal && <UnifiedMatchModal entry={mmModal} onClose={() => setMmModal(null)} onDone={() => { setMmModal(null); load() }} />}
 
