@@ -1580,7 +1580,7 @@ def get_p02_results(
         _b = _bank_map.get(r.bank_txn_id) or ('', '')
         _rp = _rep_map.get(r.txn_report_id) or ('', '', '', '')
         data.append({
-            **{k: getattr(r, k) for k in ('id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')},
+            **{k: getattr(r, k) for k in ('id','bank_txn_id','reference_number','ko_id','bank_amount','bank_type','report_amount','report_txn_type','match_status','reversal_type','success_status','notes','recon_date')},
             'bank_description': _b[0] or '',
             'bank_txn_date':   _b[1] or '',
             'report_date':     _rp[0] or '',
@@ -2213,6 +2213,12 @@ def _load_process_recs(db, p: str, recon_date, date_from=None, date_to=None,
     q = _rng(db.query(model), model, recon_date, date_from, date_to)
     rows = q.order_by(getattr(model, order_col)).all()
     recs = [{c: getattr(r, c) for c in cols} for r in rows]
+    if p == "p02":
+        # Carry bank_txn_id on the rec (NOT an export column — never in _P02_XCOLS) so
+        # _apply_src_assignments can key ref-less rows (cash deposits) on it, matching the
+        # unified view + results tab. See _src_key.
+        for rec, r in zip(recs, rows):
+            rec["bank_txn_id"] = r.bank_txn_id
     if p == "p02" and with_bank_desc and rows:
         bm = _bank_desc_map(db, [r.bank_txn_id for r in rows])
         for rec, r in zip(recs, rows):
@@ -2951,7 +2957,17 @@ def _src_key(process: str, row: dict):
         return row.get("ko_id") or None
     if p == "p02":
         ref = row.get("reference_number")
-        return f"{ref}|{row.get('bank_type') or ''}" if ref else None
+        if ref:
+            return f"{ref}|{row.get('bank_type') or ''}"
+        # Ref-less bank rows (cash deposits — "CSH DEP (CDM)…" — carry no reference in the
+        # statement) can't key on ref. Fall back to the bank row id: unique per row (no fan-out
+        # across identical same-amount deposits) and stable across recon RE-RUNS (the same bank
+        # row keeps its id, so the recreated P02 result points back at it). Namespaced so it can
+        # never collide with a ref key. Caveat: unlike a ref key it does NOT survive a bank-file
+        # RE-UPLOAD (rows get new ids) — the operator re-tags then; no stabler key exists in the
+        # P02 result for a ref-less row. bank_txn_id is present in every path that tags/reads p02.
+        btxn = row.get("bank_txn_id")
+        return f"btxn|{btxn}" if btxn else None
     if p == "p03":
         csp, ref = row.get("csp_code"), row.get("ref_number")
         return f"{csp or ''}|{ref or ''}" if (csp or ref) else None
