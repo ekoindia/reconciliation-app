@@ -1064,7 +1064,7 @@ function UnifiedMatchModal({ entry, onClose, onDone }) {
   )
 }
 
-function UnifiedTab({ reconDate, setReconDate }) {
+function UnifiedTab({ reconDate, setReconDate, onJumpToPair }) {
   const [data, setData] = useState(null)
   const [side, setSide] = useState('')
   const [statusF, setStatusF] = useState('')
@@ -1086,7 +1086,8 @@ function UnifiedTab({ reconDate, setReconDate }) {
 
   // unified `source` label → /upload/delete-rows table for module 'sbi'
   const SRC_TABLE = { 'Bank Settlement': 'bank', 'Bank Statement': 'bank',
-                      'Txn Report': 'txn', 'KO Withdrawal': 'ko_limits' }
+                      'Txn Report': 'txn', 'KO Withdrawal': 'ko_limits',
+                      'KO Deposit': 'ko_limits' }   // deposits live in ko_limits too — selectable/deletable like withdrawals
 
   const load = useCallback(async () => {
     try {
@@ -1276,6 +1277,18 @@ function UnifiedTab({ reconDate, setReconDate }) {
                           ? <span className="inline-flex items-center gap-2">
                               {['p02', 'p03'].includes(r.result_process) && (r.status || '').startsWith('Unmatched') &&
                                 <button onClick={() => setMmModal(r)} className="text-[11px] text-primary hover:underline">match</button>}
+                              {/* Rows the one-sided match modal can't serve — a KO Deposit (no P0x
+                                  result at all) and P01 rows (KO Withdrawal / Bank Settlement, which
+                                  reconcile as a PAIR, not a single result) — deep-link to Manual
+                                  Match pre-filtered to this row's date + amount, so every OPEN row
+                                  is actionable rather than a dead end. Deposits/withdrawals open in
+                                  KO↔KO mode; a settlement opens in Bank↔Internal. */}
+                              {['kod', 'p01'].includes(r.result_process) && (r.status || '').startsWith('Unmatched') && onJumpToPair &&
+                                <button onClick={() => onJumpToPair({
+                                  mode: r.source === 'Bank Settlement' ? 'bank_data' : 'ko',
+                                  date: r.date, amount: r.amount })}
+                                  title="Open Manual Match filtered to this row's date and amount"
+                                  className="text-[11px] text-primary hover:underline">match</button>}
                               <button onClick={() => setSrcModal(r)} className="text-[11px] text-yellow-700 hover:underline">src</button>
                             </span>
                           : '—'}
@@ -1389,7 +1402,7 @@ function PairPanel({ title, tone, items, selected, onSelect, queuedIds, subtitle
   )
 }
 
-function ManualPairTab({ reconDate }) {
+function ManualPairTab({ reconDate, jump }) {
   const canEdit = hasPermission('src_assign')
   const [from, setFrom] = useState(reconDate)
   const [to, setTo] = useState(reconDate)
@@ -1414,28 +1427,46 @@ function ManualPairTab({ reconDate }) {
 
   useEffect(() => { setFrom(reconDate); setTo(reconDate) }, [reconDate])
 
-  const load = async () => {
-    if (!from) { toast.error('Pick a From date'); return }
+  // `over` lets a caller (the All-Entries deep link) load a date/amount immediately, without
+  // waiting a render for the from/to state to settle.
+  const load = async (over = {}) => {
+    const _from = over.from ?? from
+    const _to = over.to ?? to
+    const _search = over.search ?? search
+    if (!_from) { toast.error('Pick a From date'); return }
     setLoading(true)
     try {
       // Load the FULL open set (not a 500-row page) so the client-side file/amount filters
       // see every item — otherwise a file with entries beyond row 500 (e.g. KO Deposit)
       // shows only the few that landed in the first page. Rendering is capped for perf.
-      const params = { date_from: from, date_to: to || from, search: search || undefined, page_size: 4000 }
+      const params = { date_from: _from, date_to: _to || _from, search: _search || undefined, page_size: 4000 }
       const [b, d, p] = await Promise.all([
         api.get('/sbi/manual-match/open-items', { params: { ...params, side: 'bank' } }),
         api.get('/sbi/manual-match/open-items', { params: { ...params, side: 'data' } }),
-        api.get('/sbi/manual-match/pair', { params: { date_from: from, date_to: to || from } }),
+        api.get('/sbi/manual-match/pair', { params: { date_from: _from, date_to: _to || _from } }),
       ])
       setBankItems(b.data.items || [])
       setDataItems(d.data.items || [])
       setBankTotal(b.data.total || 0)
       setDataTotal(d.data.total || 0)
       setPairs(p.data.rows || [])
-      setSelBank(null); setSelData(null); setDataFile(''); setAmtFilter('')
+      setSelBank(null); setSelData(null); setDataFile('')
+      setAmtFilter(over.amount != null ? String(over.amount) : '')
     } catch (e) { toast.error(e?.response?.data?.detail || 'Failed to load open items') }
     setLoading(false)
   }
+
+  // Deep link from All Entries → "match" on a KO Deposit / KO Withdrawal / Bank Settlement.
+  // Applies the mode + date + exact-amount filter and loads straight away. Keyed on jump.n so
+  // clicking the same row twice re-triggers it.
+  useEffect(() => {
+    if (!jump) return
+    const d = jump.date || reconDate
+    if (jump.mode && jump.mode !== mode) { setMode(jump.mode); setSelBank(null); setSelData(null) }
+    setFrom(d); setTo(d); setSearch('')
+    load({ from: d, to: d, search: '', amount: jump.amount })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jump?.n])
 
   const queuedIds = new Set(queue.flatMap(q => [q.bank.id, q.data.id]))
   const diffOf = (b, d) => Math.abs(Number(b?.amount || 0) - Number(d?.amount || 0))
@@ -1842,6 +1873,10 @@ function ReadinessPanel({ refreshKey, onReconciled, reconDate, setReconDate }) {
 
 export default function SBIKiosk() {
   const [tab, setTab] = useState('upload')
+  // Deep-link payload for "match" on a KO Deposit in All Entries → opens Manual Match in
+  // KO Withdrawal ↔ KO Deposit mode, pre-filtered to that row's date + amount. `n` bumps on
+  // every jump so re-clicking the same row re-triggers the effect.
+  const [pairJump, setPairJump] = useState(null)
   const [uploadKey, setUploadKey] = useState(0)
   const onUploadDone = () => setUploadKey(k => k + 1)
   // Shared business date — the Readiness dropdown and the P01–P04 tabs all read/write it,
@@ -1923,8 +1958,9 @@ export default function SBIKiosk() {
         </div>
       )}
 
-      {tab === 'unified' && <UnifiedTab reconDate={reconDate} setReconDate={setReconDate} />}
-      {tab === 'pair' && <ManualPairTab reconDate={reconDate} />}
+      {tab === 'unified' && <UnifiedTab reconDate={reconDate} setReconDate={setReconDate}
+        onJumpToPair={j => { setPairJump({ ...j, n: (pairJump?.n || 0) + 1 }); setTab('pair') }} />}
+      {tab === 'pair' && <ManualPairTab reconDate={reconDate} jump={pairJump} />}
       {tab === 'p01' && <P01Tab reconDate={reconDate} setReconDate={setReconDate} />}
       {tab === 'p02' && <P02Tab reconDate={reconDate} setReconDate={setReconDate} />}
       {tab === 'p03' && <P03Tab reconDate={reconDate} setReconDate={setReconDate} />}

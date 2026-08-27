@@ -1913,7 +1913,11 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
                                               SBIKOLimits.txn_date == recon_date).all():
             e = _new("data", "KO Deposit", w.id, "", w.ko_id, w.amount or 0, w.txn_date, "", "KO Deposit",
                      disc=_row_disc("KO Deposit", w))
+            # 'kod' = tag/act on the SOURCE row itself (there is no P0x result for a deposit).
+            # Carrying result_process/result_id/_result makes an open deposit ACTIONABLE — SRC-
+            # taggable and selectable — instead of a dead row the operator can't touch.
             e["status"] = "Unmatched"
+            e["result_process"], e["result_id"], e["_result"] = "kod", w.id, w
             entries.append(e)
 
     return _apply_pairs(db, entries)
@@ -2678,8 +2682,8 @@ def sbi_source_match_report(
 
 
 def _build_sbi_all_entries(db, dates, current_user) -> io.BytesIO:
-    """One 'All Entries' sheet: every BANK row and every INTERNAL row (Txn Reports + KO
-    Withdrawals) across the given business dates, each with its recon status, process and
+    """One 'All Entries' sheet: every BANK row and every INTERNAL row (Txn Reports, KO
+    Withdrawals + KO Deposits) across the given business dates, each with its recon status, process and
     counterpart. Rows are the per-date unified view concatenated (never crosses a date
     boundary — same guarantee as the operator-workbook range builders). Plus a
     'Status Counts' summary sheet."""
@@ -3002,6 +3006,17 @@ def _src_key(process: str, row: dict):
         return f"{csp or ''}|{ref or ''}" if (csp or ref) else None
     if p == "p04":
         return row.get("csp_code") or None
+    if p == "kod":
+        # A KO DEPOSIT source row (SBIKOLimits). It has no P01–P04 result of its own — it is the
+        # counterpart operators pair against — but it IS a real open item in the unified view, so
+        # it must be taggable. Key on stable CONTENT (ko + amount + date + the row's datetime),
+        # which survives recon re-runs AND file re-uploads — strictly better than a surrogate id.
+        try:
+            amt = f"{float(row.get('amount') or 0):.2f}"
+        except (TypeError, ValueError):
+            amt = "0.00"
+        ko, d, dt = row.get("ko_id") or "", row.get("txn_date") or "", row.get("txn_datetime") or ""
+        return f"kod|{ko}|{amt}|{d}|{dt}" if (ko or d) else None
     return None
 
 
@@ -3489,8 +3504,42 @@ def list_manual_pairs(
 
 
 # ── SRC disposition (overlay; parity with core-ledger /recon/assign-src) ───────
+_SRC_MODELS = {"p01": SBIP01Result, "p02": SBIP02Result, "p03": SBIP03Result, "p04": SBIP04Result}
+
+
+def _src_target(db, process, result_id):
+    """Resolve (process, result_id) → (row_dict, recon_date, match_key) for any SRC-taggable SBI
+    row, or None when it can't be found/keyed.
+
+    ONE resolver for all four SRC endpoints (assign / assign-bulk / remove / remove-bulk) so the
+    lookup can never drift between them. Handles two kinds of target:
+      * 'p01'–'p04' — a P0x RESULT row (recon_date on the row itself);
+      * 'kod'       — a KO DEPOSIT SOURCE row (SBIKOLimits). Deposits have no result row of their
+                      own but ARE open items in the unified view, so they're tagged directly; the
+                      business date is the row's txn_date.
+    """
+    p = (process or "").lower()
+    if p == "kod":
+        row = (db.query(SBIKOLimits)
+                 .filter(SBIKOLimits.id == result_id, SBIKOLimits.txn_type == "KO Deposit").first())
+        if not row:
+            return None
+        rd = {c.name: getattr(row, c.name) for c in SBIKOLimits.__table__.columns}
+        key = _src_key(p, rd)
+        return (rd, row.txn_date, key) if key else None
+    model = _SRC_MODELS.get(p)
+    if not model:
+        return None
+    row = db.query(model).filter(model.id == result_id).first()
+    if not row:
+        return None
+    rd = {c.name: getattr(row, c.name) for c in model.__table__.columns}
+    key = _src_key(p, rd)
+    return (rd, row.recon_date, key) if key else None
+
+
 class SBISRCIn(BaseModel):
-    process: str       # p01 | p02 | p03 | p04
+    process: str       # p01 | p02 | p03 | p04 | kod (KO Deposit source row)
     result_id: str
     src_code: str
     src_note: Optional[str] = ""   # tolerate null (empty note) — endpoint coalesces None→""
@@ -3505,20 +3554,17 @@ def assign_src(
     """Tag an SBI result row with an SRC code + note. Persists across re-runs (overlay)."""
     from routes.recon import is_valid_src_code
     p = (body.process or "").lower()
-    model = {"p01": SBIP01Result, "p02": SBIP02Result, "p03": SBIP03Result, "p04": SBIP04Result}.get(p)
-    if not model:
-        raise HTTPException(status_code=400, detail="process must be one of p01..p04")
+    if p not in _SRC_MODELS and p != "kod":
+        raise HTTPException(status_code=400, detail="process must be one of p01..p04 or kod")
     if not is_valid_src_code(db, body.src_code):
         raise HTTPException(status_code=400, detail=f"Invalid SRC code: {body.src_code}")
-    row = db.query(model).filter(model.id == body.result_id).first()
-    if not row:
-        raise HTTPException(status_code=404, detail="Result row not found")
-    row_dict = {c.name: getattr(row, c.name) for c in model.__table__.columns}
-    key = _src_key(p, row_dict)
-    if not key:
-        raise HTTPException(status_code=400, detail="Row has no stable key to tag")
+    target = _src_target(db, p, body.result_id)
+    if target is None:
+        # distinguish "no such row" from "row can't be keyed" for an actionable message
+        raise HTTPException(status_code=404, detail="Row not found, or it has no stable key to tag")
+    row_dict, _recon_date, key = target
     existing = db.query(SBISrcAssignment).filter(
-        SBISrcAssignment.recon_date == row.recon_date,
+        SBISrcAssignment.recon_date == _recon_date,
         SBISrcAssignment.process == p,
         SBISrcAssignment.match_key == key,
     ).first()
@@ -3528,7 +3574,7 @@ def assign_src(
         existing.created_by = current_user.username
         sa = existing
     else:
-        sa = SBISrcAssignment(recon_date=row.recon_date, process=p, match_key=key,
+        sa = SBISrcAssignment(recon_date=_recon_date, process=p, match_key=key,
                               src_code=body.src_code, src_note=(body.src_note or "")[:500],
                               created_by=current_user.username)
         db.add(sa)
@@ -3536,7 +3582,7 @@ def assign_src(
         db.add(AuditLog(user_id=current_user.id, username=current_user.username,
                         action="sbi_assign_src", action_type="human",
                         entity_type="sbi", entity_id=sa.id,
-                        detail=json.dumps({"process": p, "recon_date": row.recon_date,
+                        detail=json.dumps({"process": p, "recon_date": _recon_date,
                                            "match_key": key, "src_code": body.src_code,
                                            "src_note": body.src_note})))
     except Exception:
@@ -3592,7 +3638,6 @@ def assign_src_bulk(
         raise HTTPException(status_code=400, detail=f"Invalid SRC code: {body.src_code}")
     if not body.items:
         raise HTTPException(status_code=400, detail="No rows provided")
-    models = {"p01": SBIP01Result, "p02": SBIP02Result, "p03": SBIP03Result, "p04": SBIP04Result}
     note = (body.src_note or "")[:500]
     updated = skipped = 0
     seen = set()   # two unified rows can map to one P0x result — tag it once
@@ -3601,18 +3646,12 @@ def assign_src_bulk(
         if (p, it.result_id) in seen:
             continue
         seen.add((p, it.result_id))
-        model = models.get(p)
-        if not model:
+        target = _src_target(db, p, it.result_id)   # shared resolver: p01–p04 AND 'kod' deposits
+        if target is None:
             skipped += 1; continue
-        row = db.query(model).filter(model.id == it.result_id).first()
-        if not row:
-            skipped += 1; continue
-        row_dict = {c.name: getattr(row, c.name) for c in model.__table__.columns}
-        key = _src_key(p, row_dict)
-        if not key:
-            skipped += 1; continue
+        _rowd, _recon_date, key = target
         existing = db.query(SBISrcAssignment).filter(
-            SBISrcAssignment.recon_date == row.recon_date,
+            SBISrcAssignment.recon_date == _recon_date,
             SBISrcAssignment.process == p,
             SBISrcAssignment.match_key == key,
         ).first()
@@ -3621,7 +3660,7 @@ def assign_src_bulk(
             existing.src_note = note
             existing.created_by = current_user.username
         else:
-            db.add(SBISrcAssignment(recon_date=row.recon_date, process=p, match_key=key,
+            db.add(SBISrcAssignment(recon_date=_recon_date, process=p, match_key=key,
                                     src_code=body.src_code, src_note=note,
                                     created_by=current_user.username))
         updated += 1
@@ -3646,19 +3685,16 @@ class SBIBulkSRCRemoveIn(BaseModel):
 
 
 def _sbi_find_src_overlay(db, p, result_id):
-    """Resolve a (process, result_id) to its SBISrcAssignment overlay row, or None."""
-    model = {"p01": SBIP01Result, "p02": SBIP02Result, "p03": SBIP03Result, "p04": SBIP04Result}.get(p)
-    if not model:
+    """Resolve a (process, result_id) to its SBISrcAssignment overlay row, or None.
+    Uses the same _src_target resolver as assign, so remove works for every taggable row type
+    (p01–p04 results AND 'kod' KO-Deposit source rows) — they can never drift apart."""
+    target = _src_target(db, p, result_id)
+    if target is None:
         return None
-    row = db.query(model).filter(model.id == result_id).first()
-    if not row:
-        return None
-    key = _src_key(p, {c.name: getattr(row, c.name) for c in model.__table__.columns})
-    if not key:
-        return None
+    _rowd, _recon_date, key = target
     return db.query(SBISrcAssignment).filter(
-        SBISrcAssignment.recon_date == row.recon_date,
-        SBISrcAssignment.process == p,
+        SBISrcAssignment.recon_date == _recon_date,
+        SBISrcAssignment.process == (p or "").lower(),
         SBISrcAssignment.match_key == key).first()
 
 
