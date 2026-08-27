@@ -55,6 +55,19 @@ api.interceptors.response.use(
     return res
   },
   err => {
+    // FastAPI/Pydantic 422 returns `detail` as an ARRAY of error objects (or an object),
+    // shaped {type, loc, msg, input, url}. Callers everywhere do `toast.error(e.response
+    // .data.detail || '…')`, and handing react-hot-toast (or JSX) a non-string renders an
+    // object as a React child → React #31 → because <Toaster> lives OUTSIDE the route
+    // ErrorBoundary, the whole app unmounts → blank screen. Flatten it to a readable string
+    // ONCE here so every one of the ~126 call sites stays safe without touching each.
+    const _data = err.response?.data
+    if (_data && _data.detail != null && typeof _data.detail !== 'string') {
+      const d = _data.detail
+      _data.detail = Array.isArray(d)
+        ? d.map(e => (e && typeof e === 'object') ? (e.msg || JSON.stringify(e)) : String(e)).join('; ')
+        : (typeof d === 'object' ? (d.msg || JSON.stringify(d)) : String(d))
+    }
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
       localStorage.removeItem('user')

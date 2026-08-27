@@ -819,14 +819,14 @@ class EvalueSRCIn(BaseModel):
     id: str
     side: str          # "bank" | "load"
     src_code: str
-    src_note: str = ""
+    src_note: Optional[str] = ""   # tolerate null (empty note) — endpoint coalesces None→""
 
 
 class EvalueBulkSRCIn(BaseModel):
     ids: List[str]
     side: str
     src_code: str
-    src_note: str = ""
+    src_note: Optional[str] = ""   # tolerate null (empty note) — endpoint coalesces None→""
 
 
 @router.post("/assign-src")

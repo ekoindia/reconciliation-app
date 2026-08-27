@@ -270,7 +270,7 @@ function SrcModal({ process, procLabel, row, summary, onClose, onDone }) {
         await api.post('/sbi/remove-src', { process, result_id: row.id })
         toast.success('SRC removed')
       } else {
-        await api.post('/sbi/assign-src', { process, result_id: row.id, src_code: form.src_code, src_note: form.src_note?.trim() || null })
+        await api.post('/sbi/assign-src', { process, result_id: row.id, src_code: form.src_code, src_note: form.src_note?.trim() || '' })
         toast.success(tagged ? 'SRC updated' : 'SRC assigned')
       }
       onDone()

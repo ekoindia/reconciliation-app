@@ -3448,7 +3448,7 @@ class SBISRCIn(BaseModel):
     process: str       # p01 | p02 | p03 | p04
     result_id: str
     src_code: str
-    src_note: str = ""
+    src_note: Optional[str] = ""   # tolerate null (empty note) — endpoint coalesces None→""
 
 
 @router.post("/assign-src")
@@ -3530,7 +3530,7 @@ class SBIBulkSRCItem(BaseModel):
 class SBIBulkSRCIn(BaseModel):
     items: List[SBIBulkSRCItem]
     src_code: str
-    src_note: str = ""
+    src_note: Optional[str] = ""   # tolerate null (empty note) — endpoint coalesces None→""
 
 
 @router.post("/assign-src-bulk")
