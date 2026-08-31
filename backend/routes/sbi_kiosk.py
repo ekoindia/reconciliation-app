@@ -536,6 +536,14 @@ async def upload_txn_report(
     def gc(key): return col_map.get(key, '')
     def gv(row, key): return _clean(row.get(gc(key), '')) if gc(key) else ''
 
+    # Resolve the date column by PREFIX, not exact key. The BC "Deposit" report's header cell
+    # is truncated to "Transaction Date &" (no "Time"), so it normalises to 'transaction_date_&'
+    # and matched NEITHER exact key below — every row then ingested with a blank txn_date, which
+    # makes it invisible to every date-scoped view (the report, the unified ledger, all four P0x
+    # runs) and unmatchable. It looked to the operator like the upload had simply not worked.
+    _date_col = next((v for k, v in col_map.items()
+                      if re.sub(r'_+', '_', k).startswith('transaction_date')), '')
+
     today = str(datetime.date.today())
     source = file.filename
     my_product = canonical_product(source)
@@ -553,7 +561,9 @@ async def upload_txn_report(
         # Skip metadata/empty rows
         sr = gv(row, 'sr._no') or gv(row, 'sr._no.')
         if not sr or not str(sr).replace('.', '').strip().isdigit(): continue
-        raw_dt = gv(row, 'transaction_date_&_time') or gv(row, 'transaction_date')
+        raw_dt = ((_clean(row.get(_date_col, '')) if _date_col else '')
+                  or gv(row, 'transaction_date_&_time')
+                  or gv(row, 'transaction_date'))
         txn_date = _nd(raw_dt[:10]) if raw_dt else ''
         if txn_date: file_dates.add(txn_date)
         parsed.append((raw_dt, txn_date, row))
