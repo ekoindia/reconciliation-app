@@ -109,9 +109,9 @@ def test_account_filter_core(db):
 
 
 def test_catalog_lists_accounts(db):
-    for acct in ("ACCOUNT-REDACTED-78", "ACCOUNT-REDACTED-74"):
+    for acct in ("ACC-BANK-2", "ACC-BANK-1"):
         db.add(Transaction(partner="axis", side="bank", recon_date="2026-07-20", amount=1,
                            row_type="txn", bank_account=acct, raw_data="{}"))
     db.commit()
     ax = next(p for p in download_catalog(db=db, current_user=USER)["products"] if p["key"] == "axis")
-    assert set(ax["sides"]["bank"]["accounts"]) == {"ACCOUNT-REDACTED-78", "ACCOUNT-REDACTED-74"}
+    assert set(ax["sides"]["bank"]["accounts"]) == {"ACC-BANK-2", "ACC-BANK-1"}

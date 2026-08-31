@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from models.database import Base, EvalueAccount, EvalueBankTxn
 from routes.evalue import ingest_bank_bytes
 
-ACCT = "ICIC-8580"; BANK = "ICICI BANK"; ACCTNO = "ACCOUNT-REDACTED-01"
+ACCT = "ICIC-8580"; BANK = "ICICI BANK"; ACCTNO = "112233445566"
 _HDR = ["S.N.", "Tran. Id", "Value Date", "Transaction Date", "Transaction Posted Date",
         "Cheque. No./Ref. No.", "Transaction Remarks", "Withdrawal Amt (INR)",
         "Deposit Amt (INR)", "Balance (INR)"]

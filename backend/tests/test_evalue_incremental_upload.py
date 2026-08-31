@@ -38,7 +38,7 @@ def db():
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     s = Session()
-    s.add(EvalueAccount(bank_name="ICICI BANK", account_number="ACCOUNT-REDACTED-01", reco_acc_no=ACCT))
+    s.add(EvalueAccount(bank_name="ICICI BANK", account_number="112233445566", reco_acc_no=ACCT))
     s.commit()
     yield s
     s.close()
@@ -51,7 +51,7 @@ def _icici_file(date_ddmon: str, remark: str, withdrawal: str, balance: str) -> 
     ws.title = "Sheet0"
     for r in [
         ["Detailed Statement"],
-        ["A/C No:", "ACCOUNT-REDACTED-01"],
+        ["A/C No:", "112233445566"],
         [],
         ["S.N.", "Tran. Id", "Value Date", "Transaction Date", "Transaction Posted Date",
          "Cheque. No./Ref. No.", "Transaction Remarks", "Withdrawal Amt (INR)",
@@ -105,7 +105,7 @@ def test_cumulative_file_replaces_its_own_dates(db):
     # a 2-day cumulative file, then a 3-day cumulative for an overlapping+new range
     def multi(rows):
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Sheet0"
-        ws.append(["Detailed Statement"]); ws.append(["A/C No:", "ACCOUNT-REDACTED-01"]); ws.append([])
+        ws.append(["Detailed Statement"]); ws.append(["A/C No:", "112233445566"]); ws.append([])
         ws.append(["S.N.", "Tran. Id", "Value Date", "Transaction Date", "Transaction Posted Date",
                    "Cheque. No./Ref. No.", "Transaction Remarks", "Withdrawal Amt (INR)",
                    "Deposit Amt (INR)", "Balance (INR)"])

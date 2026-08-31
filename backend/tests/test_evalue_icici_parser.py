@@ -18,7 +18,7 @@ def _synthetic_icici() -> bytes:
         [],
         ["Detailed Statement"],
         ["Name:", "EKO INDIA FINANCIAL SERVICES", "", "Account Currency:", "INR"],
-        ["A/C No:", "ACCOUNT-REDACTED-01"],
+        ["A/C No:", "112233445566"],
         ["Transaction Period", "From 01/07/2026 To 03/07/2026"],
         ["Advanced Search"],
         ["Transaction type:", "DR"],
