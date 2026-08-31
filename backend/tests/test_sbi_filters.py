@@ -40,7 +40,7 @@ def test_p01_ko_search(db):
     db.add(SBIP01Result(recon_date=RD, ko_id="1A999001", status="CREDITED"))
     db.add(SBIP01Result(recon_date=RD, ko_id="1A999002", status="PARTIAL"))
     db.commit()
-    out = get_p01_results(recon_date=RD, ko_id="0086", db=db, current_user=USER)
+    out = get_p01_results(recon_date=RD, ko_id="9001", db=db, current_user=USER)   # partial-KO search
     assert [r["ko_id"] for r in out["rows"]] == ["1A999001"]
 
 

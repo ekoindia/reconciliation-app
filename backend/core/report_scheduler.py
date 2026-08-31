@@ -501,7 +501,7 @@ def _analytics_email_html(db, from_date: str, to_date: str) -> str:
         t = a.get("totals", {})
         groups = a.get("by_group", [])
         day_label = from_date if from_date == to_date else f"{from_date} → {to_date}"
-        base = os.getenv("APP_PUBLIC_URL", "https://APP-HOST:8443/recon").rstrip("/")
+        base = os.getenv("APP_PUBLIC_URL", "").rstrip("/")
         exec_url = base + "/exec"
 
         others = int(t.get("mismatch", 0)) + int(t.get("other", 0))
