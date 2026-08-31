@@ -99,8 +99,12 @@ export default function Layout() {
       >
         {/* Logo */}
         <div className={`flex items-center gap-3 px-4 py-4 border-b border-white/10 ${collapsed ? 'justify-center px-2' : ''}`}>
-          <div className="w-9 h-9 rounded-xl bg-accent/15 ring-1 ring-accent/30 flex items-center justify-center flex-shrink-0">
-            <EkoLogo variant="mark" height={22} />
+          {/* The official logo is a WORDMARK (wide), so it gets a pill-shaped tile that follows
+              its aspect ratio — the old fixed 36x36 square was sized for the square sun mark and
+              would have squashed it. The artwork itself is untouched. */}
+          <div className={`rounded-xl bg-accent/15 ring-1 ring-accent/30 flex items-center justify-center flex-shrink-0
+                           ${collapsed ? 'px-2 py-1.5' : 'px-2.5 py-2'}`}>
+            <EkoLogo height={collapsed ? 18 : 22} />
           </div>
           {!collapsed && (
             <div className="min-w-0 leading-tight">

@@ -1,53 +1,50 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Eko brand mark — inline SVG recreation of the "eko" sunrise wordmark.
+// Brand mark.
 //
-// SVG (not a raster asset) so it stays crisp at any size, themes with the brand
-// amber (#F9AB10, tailwind `accent`), and ships inside the JS bundle — no extra
-// file to deploy or 404. Two shapes:
-//   variant="full" → sun rays + the "eko" wordmark  (login, wide spaces)
-//   variant="mark" → the rising-sun mark only        (collapsed sidebar, favicon)
+// The real Eko logo is a TRADEMARK and is deliberately NOT committed to this
+// public repo. Deployments drop the official file at `frontend/public/eko-logo.png`
+// (gitignored — see frontend/public/README.md); it is then rendered untouched: no
+// redraw, recolour, crop or filter. Replacing that one file is the whole rebrand.
 //
-// TO USE THE OFFICIAL ASSET INSTEAD: drop the real file at
-// frontend/public/eko-logo.svg and render <img src="/eko-logo.svg" .../> in place
-// of <EkoLogo/> — every call site updates from that one swap. Until then this is a
-// faithful stand-in, not the exact registered logo.
+// When the file is absent (a fresh clone, or a fork with its own branding) the
+// <img> 404s and we fall back to a plain text wordmark — deliberately generic, so
+// nobody mistakes a stand-in for the registered mark. Do NOT "improve" that
+// fallback into a lookalike of the real logo.
+//
+// The asset is a wordmark (wider than tall), so callers set `height` and the width
+// follows the artwork's own aspect ratio. src is BASE_URL-prefixed because
+// production is served under the /recon/ subpath.
 // ─────────────────────────────────────────────────────────────────────────────
-const BRAND = '#F9AB10'
-const RAYS = [-72, -48, -24, 0, 24, 48, 72]   // degrees from straight-up, fanned
+import { useState } from 'react'
 
-export default function EkoLogo({ variant = 'full', height = 40, color = BRAND, className = '' }) {
-  if (variant === 'mark') {
-    const cx = 24, cy = 27
+const SRC = `${import.meta.env.BASE_URL}eko-logo.png`
+const BRAND = '#F9AB10'
+
+export default function EkoLogo({ height = 40, className = '', alt = 'Eko' }) {
+  const [missing, setMissing] = useState(false)
+
+  if (missing) {
+    // Neutral placeholder — NOT a reproduction of the registered logo.
     return (
-      <svg height={height} viewBox="0 0 48 48" className={className} role="img" aria-label="Eko">
-        <g stroke={color} strokeWidth="3.2" strokeLinecap="round">
-          {RAYS.map(a => {
-            const r = (a * Math.PI) / 180, r1 = 12, r2 = a === 0 ? 20 : 18
-            return <line key={a}
-              x1={cx + r1 * Math.sin(r)} y1={cy - r1 * Math.cos(r)}
-              x2={cx + r2 * Math.sin(r)} y2={cy - r2 * Math.cos(r)} />
-          })}
-        </g>
-        {/* rising-sun dome */}
-        <path d={`M ${cx - 11} ${cy + 3} a 11 11 0 0 1 22 0 Z`} fill={color} />
-      </svg>
+      <span
+        className={`inline-flex items-center font-extrabold leading-none select-none ${className}`}
+        style={{ height, fontSize: height * 0.62, color: BRAND, letterSpacing: '-0.03em' }}
+        aria-label={alt}
+      >
+        eko
+      </span>
     )
   }
 
-  const cx = 66, cy = 20
   return (
-    <svg height={height} viewBox="0 0 132 56" className={className} role="img" aria-label="eko">
-      <g stroke={color} strokeWidth="3" strokeLinecap="round">
-        {RAYS.map(a => {
-          const r = (a * Math.PI) / 180, r1 = 5, r2 = a === 0 ? 16 : 14
-          return <line key={a}
-            x1={cx + r1 * Math.sin(r)} y1={cy - r1 * Math.cos(r)}
-            x2={cx + r2 * Math.sin(r)} y2={cy - r2 * Math.cos(r)} />
-        })}
-      </g>
-      <text x="66" y="52" textAnchor="middle" fill={color}
-        fontFamily="'Baloo 2','Nunito','Quicksand',system-ui,-apple-system,sans-serif"
-        fontWeight="800" fontSize="36" letterSpacing="-1.5">eko</text>
-    </svg>
+    <img
+      src={SRC}
+      alt={alt}
+      onError={() => setMissing(true)}
+      // height drives the box; width auto-follows so the logo is never distorted
+      style={{ height, width: 'auto' }}
+      className={`block select-none ${className}`}
+      draggable="false"
+    />
   )
 }

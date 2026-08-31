@@ -83,7 +83,7 @@ export default function Login() {
       <div className="relative w-full max-w-md animate-fade-in">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center px-6 h-16 bg-accent/15 ring-1 ring-accent/30 rounded-2xl mb-4 shadow-lg">
-            <EkoLogo variant="full" height={44} />
+            <EkoLogo height={44} />
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Eko Bharat Ventures</h1>
           <p className="text-white/60 text-sm mt-1">Reconciliation Portal</p>

@@ -65,3 +65,9 @@ desktop.ini
 # Local scratch/trash (moved-aside junk) and server-only ops dir — never commit
 _trash/
 ops/
+
+# Brand assets — the Eko logo is a TRADEMARK, not MIT-licensed code, so the real
+# file is never committed to this public repo. Deployments drop it at
+# frontend/public/eko-logo.png (see frontend/public/README.md); the UI falls back
+# to a plain text wordmark when it is absent.
+frontend/public/eko-logo.*
