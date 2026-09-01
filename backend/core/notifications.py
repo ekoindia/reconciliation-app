@@ -59,6 +59,15 @@ def send_eod_summary(db):
     Summarises today's recon activity across all partners.
     """
     if not EOD_EMAIL_TO:
+        # The job is registered and fires every night regardless, so a missing
+        # recipient list meant it ran and returned in silence — indistinguishable
+        # from "sent fine". Say so, once per run, or nobody learns the digest is dark.
+        logger.warning("[notifications] EOD email NOT sent: EOD_EMAIL_TO is empty "
+                       "(set EOD_EMAIL_TO, and SMTP_HOST, in backend/.env)")
+        return
+    if not SMTP_HOST:
+        logger.warning("[notifications] EOD email NOT sent: SMTP_HOST is not configured "
+                       "(set SMTP_HOST in backend/.env)")
         return
 
     today = str(datetime.date.today())
