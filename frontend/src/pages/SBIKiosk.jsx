@@ -1520,7 +1520,15 @@ function ManualPairTab({ reconDate, jump }) {
       if (data.queued) { toast(data.message || 'Queued for approval', { icon: '🕒' }); setQueue([]); setRemark('') }
       else {
         const msg = `${data.paired} paired${data.warned ? ` · ${data.warned} amount warning` : ''}${data.errors ? ` · ${data.errors} failed` : ''}`
-        data.errors ? toast(msg, { icon: '⚠️' }) : toast.success(msg)
+        // Show WHY it failed. The backend returns a reason per pair; reporting only the count
+        // left the operator with "1 failed" and nothing to act on. Distinct reasons only, capped
+        // so a bulk submit can't produce a wall of text.
+        const why = [...new Set((data.results || [])
+          .filter(r => r.status === 'error' && r.error).map(r => r.error))]
+        data.errors
+          ? toast(`${msg}${why.length ? ` — ${why.slice(0, 2).join('; ')}${why.length > 2 ? ' …' : ''}` : ''}`,
+                  { icon: '⚠️', duration: 8000 })
+          : toast.success(msg)
         setQueue([]); setRemark(''); await load()
       }
     } catch (e) { toast.error(e?.response?.data?.detail || 'Submit failed') }

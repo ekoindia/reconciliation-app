@@ -3333,6 +3333,38 @@ def _bank_descriptor(b):
     return {"key": key, "source": src, "amount": float(amt or 0), "date": b.txn_date}
 
 
+def _key_capacity(db, source, key, date, amount):
+    """How many PHYSICAL rows carry this exact business key — i.e. how many manual pairs the
+    key can legitimately absorb before it really is exhausted.
+
+    Normally 1. But _row_disc cannot always separate two business-identical rows: for KO rows
+    it uses txn_datetime, which in this feed is a BATCH stamp shared by many rows, so one KO
+    depositing the same amount twice on one day collapses to a single key. _apply_pairs already
+    handles that on read (one (pair, leg) consumed per row); this lets the write guard agree.
+
+    Falls back to 1 whenever the rows can't be located, so the guard can only ever be as
+    permissive as before, never more.
+    """
+    try:
+        amt = float(amount or 0)
+    except (TypeError, ValueError):
+        return 1
+    lo, hi = amt - 0.005, amt + 0.005
+    if source in ("KO Withdrawal", "KO Deposit"):
+        rows = db.query(SBIKOLimits).filter(
+            SBIKOLimits.txn_type == source, SBIKOLimits.txn_date == date,
+            SBIKOLimits.amount >= lo, SBIKOLimits.amount <= hi).all()
+        return sum(1 for r in rows if _data_descriptor(r, source)["key"] == key) or 1
+    if source == "Txn Report":
+        rows = db.query(SBITxnReport).filter(
+            SBITxnReport.txn_date == date,
+            SBITxnReport.amount >= lo, SBITxnReport.amount <= hi).all()
+        return sum(1 for r in rows if _data_descriptor(r, "Txn Report")["key"] == key) or 1
+    # Bank rows key on the running balance, which is unique per statement line (0 collisions
+    # in production) — keep the original strict 1:1.
+    return 1
+
+
 def _data_descriptor(row, data_source):
     """Resolve an internal source row to its stable, id-independent pair descriptor."""
     if data_source == "Txn Report":
@@ -3389,7 +3421,20 @@ def create_manual_pairs(
     existing = db.query(SBIManualPair).all()
     # One key space (bank/bankset vs txr/kow/kod are disjoint) so a row can be at most ONE leg of
     # ONE pair — required for internal↔internal, where a KO row could be either leg.
-    used_keys = {p.bank_key for p in existing if p.bank_key} | {p.data_key for p in existing if p.data_key}
+    # COUNTED, not a set: a business key is not always unique to one physical row. _row_disc uses
+    # txn_datetime for KO rows, but that is a BATCH stamp (one stamp covers ~5-9 rows), so a KO
+    # depositing the SAME amount twice on one day in one batch yields two rows with an IDENTICAL
+    # key. A set made the second row permanently unpairable ("already manually matched") even
+    # though nothing had consumed it. _apply_pairs on the read side is already occurrence-aware
+    # (it consumes one (pair, leg) per row), so the write guard now matches it: allow a pair
+    # while consumers < physical rows carrying that key.
+    from collections import Counter
+    key_used = Counter()
+    for p in existing:
+        if p.bank_key:
+            key_used[p.bank_key] += 1
+        if p.data_key:
+            key_used[p.data_key] += 1
     resolved, results, errors, warned = [], [], 0, 0
     for pr in body.pairs:
         try:
@@ -3432,12 +3477,20 @@ def create_manual_pairs(
 
             if bd["key"] == dd["key"]:
                 raise ValueError("Cannot pair a row with itself")
-            if bd["key"] in used_keys:
-                raise ValueError("Left row already manually matched")
-            if dd["key"] in used_keys:
-                raise ValueError("Internal row already manually matched")
-            used_keys.add(bd["key"])
-            used_keys.add(dd["key"])
+            _lcap = _key_capacity(db, bd["source"], bd["key"], bd["date"], bd["amount"])
+            if key_used[bd["key"]] >= _lcap:
+                raise ValueError(
+                    f"Left row already manually matched"
+                    + (f" (all {_lcap} identical rows for this date/amount are paired)"
+                       if _lcap > 1 else ""))
+            _dcap = _key_capacity(db, dd["source"], dd["key"], dd["date"], dd["amount"])
+            if key_used[dd["key"]] >= _dcap:
+                raise ValueError(
+                    f"Internal row already manually matched"
+                    + (f" (all {_dcap} identical rows for this date/amount are paired)"
+                       if _dcap > 1 else ""))
+            key_used[bd["key"]] += 1
+            key_used[dd["key"]] += 1
             diff = round(abs(bd["amount"] - dd["amount"]), 2)
             resolved.append({"bank_key": bd["key"], "data_key": dd["key"],
                              "bank_source": bd["source"], "data_source": dd["source"],
