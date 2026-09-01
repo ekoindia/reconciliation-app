@@ -300,6 +300,34 @@ def build_analytics(db, date_from=None, date_to=None, product=None, side=None):
             continue
         recs.append((partner, sd or "bank", d, _statv(status), cnt or 0, float(amt or 0)))
 
+    # Surplus (non-canonical) legs of internal SELF-matches, per (partner, date).
+    # An internal self-match is ONE transaction recorded twice — a Success and its
+    # Refund/contra — but BOTH legs carry side='internal', so the "drop the internal
+    # leg" pair-dedup in the roll-up below cannot dedup it and the pair would count
+    # TWICE. Each pair links its two rows MUTUALLY via matched_with_id, so keeping
+    # the leg whose id sorts first drops exactly one leg per pair.
+    # Rows with NO link are deliberately left alone: `run_internal_match` pass 3
+    # (digikhata "net position") stamps a shared match_id on N residual rows that are
+    # each a distinct wallet movement — deduping those by match_id would collapse
+    # them to one. That is why this keys on matched_with_id, not match_id.
+    im_surplus = {}
+    sq = db.query(Transaction.partner, Transaction.recon_date,
+                  F.count(Transaction.id), F.sum(Transaction.amount)) \
+           .filter(Transaction.row_type == "txn",
+                   F.lower(Transaction.recon_status) == "internal_matched",
+                   Transaction.matched_with_id.isnot(None),
+                   Transaction.matched_with_id < Transaction.id,
+                   Transaction.recon_date.isnot(None),
+                   Transaction.recon_date.like("20%"))
+    if date_from:
+        sq = sq.filter(Transaction.recon_date >= date_from)
+    if date_to:
+        sq = sq.filter(Transaction.recon_date <= date_to)
+    for partner, d, cnt, amt in sq.group_by(Transaction.partner,
+                                            Transaction.recon_date).all():
+        if partner and _in_range(d):
+            im_surplus[(partner, d)] = (cnt or 0, float(amt or 0))
+
     # ── 2. E-Value (bank + wallet-load sides, own tables) ─────────────────────
     # E-Value load side is dated by its VALUE date (fallback txn) — the date it
     # reconciles on (behavior-contract item 13); bank side has a single date.
@@ -445,6 +473,18 @@ def build_analytics(db, date_from=None, date_to=None, product=None, side=None):
         # internal self-match with NO bank leg — dropping it would zero it out, so keep it.
         if b in ("matched", "mismatch") and sd == "internal" and str(status).lower() != "internal_matched":
             continue
+        # …but that exemption alone would count an internal self-match TWICE, because
+        # both of its legs are side='internal'. Drop the surplus leg here so the pair
+        # contributes exactly ONCE, like every other matched pair. Unlinked rows
+        # (digikhata net position) have no surplus entry and are untouched.
+        # by_side / side_tx above still deliberately see BOTH legs.
+        if b == "matched" and sd == "internal" and str(status).lower() == "internal_matched":
+            _scnt, _samt = im_surplus.get((prod, d), (0, 0.0))
+            if _scnt:
+                cnt = max(0, cnt - _scnt)
+                amt = round(amt - _samt, 2)
+                if not cnt:
+                    continue
         for bag in (totals, by_product.setdefault(prod, _blank()),
                     by_group.setdefault(g, _blank()), daily_map.setdefault(d, _blank())):
             _apply(bag, b, cnt, amt)

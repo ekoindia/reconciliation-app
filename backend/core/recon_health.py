@@ -60,14 +60,34 @@ def compute_recon_health(db, days: int = 7) -> dict:
         return "warn", f"{n} blocked re-upload attempt(s) in {days}d", {"count": n}
 
     def _watch_folders():
+        from models.database import UploadSchedule
         rows = db.query(WatchFolderConfig).all()
         bad = [{"label": w.label, "status": w.last_trigger_status,
                 "message": w.last_trigger_message}
-               for w in rows if (w.last_trigger_status or "") in ("error", "not_found")]
-        if not bad:
+               for w in rows if (w.last_trigger_status or "") in ("error", "not_found", "partial")]
+
+        # A folder only runs if it has an ENABLED UploadSchedule — that is what puts a
+        # cron job on the scheduler. A configured folder with no enabled schedule never
+        # fires at all, so its last_trigger_status stays NULL forever… which used to
+        # fall straight through to "Watch folders healthy". A folder that has never run
+        # is not healthy, it is not running: the files must be uploaded by hand, and
+        # nothing anywhere said so.
+        scheduled = {s.watch_folder_id for s in
+                     db.query(UploadSchedule).filter(UploadSchedule.is_enabled == True).all()}
+        idle = [w.label for w in rows if w.id not in scheduled]
+
+        if not bad and not idle:
             return "ok", "Watch folders healthy", {"errors": 0}
+        # 'partial' = rows landed but a post-ingest step (recon / NEFT / self-match)
+        # failed. Not critical (the file IS in), but never "healthy" either — this is
+        # exactly the silent half-success the folder used to report as fine.
         sev = "critical" if any(b["status"] == "error" for b in bad) else "warn"
-        return sev, f"{len(bad)} watch folder(s) in error/not_found", {"folders": bad}
+        parts = []
+        if bad:
+            parts.append(f"{len(bad)} in error/not_found/partial")
+        if idle:
+            parts.append(f"{len(idle)} configured but not scheduled (manual upload only)")
+        return sev, "Watch folders: " + ", ".join(parts), {"folders": bad, "unscheduled": idle}
 
     def _dq_warnings():
         rows = db.query(IngestionEvent).filter(

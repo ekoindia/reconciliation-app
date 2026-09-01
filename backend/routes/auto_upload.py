@@ -290,10 +290,15 @@ def trigger_upload(
         do_auto_recon=config.auto_recon,
     )
 
-    # Update config last trigger info
+    # Update config last trigger info. Mirrors core/scheduler.py: post-ingest steps
+    # never raise (contract #4), so a bare "success" here would hide a half-done run.
+    _perr = result.get("post_errors") or []
     config.last_triggered_at    = datetime.datetime.utcnow()
-    config.last_trigger_status  = "success"
-    config.last_trigger_message = f"Ingested {result['row_count']} rows from {expected_name}"
+    config.last_trigger_status  = "partial" if _perr else "success"
+    config.last_trigger_message = (
+        f"Ingested {result['row_count']} rows from {expected_name}"
+        + (f" — but {len(_perr)} post-ingest step(s) failed: {_perr[0]}" if _perr else "")
+    )
     config.last_trigger_filename = expected_name
     db.commit()
 

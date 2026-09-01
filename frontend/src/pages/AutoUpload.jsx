@@ -34,6 +34,9 @@ function statusBadge(status) {
   if (!status) return <span className="badge-gray">Never run</span>
   if (status === 'success')   return <span className="badge-green flex items-center gap-1"><CheckCircle size={11}/>Success</span>
   if (status === 'not_found') return <span className="badge-yellow flex items-center gap-1"><AlertCircle size={11}/>File not found</span>
+  // 'partial' — the file ingested, but a post-ingest step (recon / NEFT / self-match)
+  // failed. Distinct from a red Error: the rows ARE in, the follow-up work is not.
+  if (status === 'partial')   return <span className="badge-yellow flex items-center gap-1"><AlertCircle size={11}/>Ingested, recon failed</span>
   return <span className="badge-red flex items-center gap-1"><XCircle size={11}/>Error</span>
 }
 

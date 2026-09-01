@@ -238,6 +238,30 @@ through one shared aggregator** so a new product appears everywhere at once.
 manual match, rule editors) are legitimately scoped to one ledger; analytical surfaces must be
 all-products. Write that rule down, or every audit re-flags the intentional exclusions.
 
+**A pair-dedup keyed on *side* cannot dedup a SAME-side pair — and exempting it double-counts.**
+A matched pair is one transaction stored as two rows, so headline counts drop one leg, usually
+with `if bucket == matched and side == internal: continue`. A *self*-match (a payment and its
+own reversal/refund, netted inside one dump) has BOTH legs on the same side, so that rule would
+drop both and zero the bucket. The tempting patch — exempt the self-match status from the skip —
+makes it the one pair counted **twice**, inflating matched count *and* matched volume while
+every other pair counts once. It hides well: the bucket is non-empty and the total looks
+plausible. Dedup on the **pair link** (`matched_with_id`, set mutually by the pairing pass:
+keep the leg whose id sorts first) rather than on side.
+
+**…but do NOT dedup by the group id.** The same status was also written by a bulk "net position"
+pass that stamps ONE shared `match_id` on N residual rows that are each a distinct movement.
+`COUNT(DISTINCT match_id)` would collapse those N to 1 — a second wrong answer. Before writing a
+dedup, enumerate **every** writer of that status: one wrote 2-row pairs, another wrote N-row
+groups, and only the per-row link tells them apart. Halving (`/2`) is wrong for a third reason:
+legs of a pair may differ by rounding crumbs inside the match tolerance, so pick a canonical
+leg, never an average.
+
+**Verify a headline restatement against production before shipping it.** This dedup lowers a
+CEO-facing "matched" figure. Compute the predicted per-date numbers from the raw tables first,
+deploy, then re-run and assert the live output equals the prediction — and state the delta to
+the user *before* deploying, because "matched went down" reads as a regression unless you can
+show it was a double-count.
+
 ---
 
 ## 6. Safety discipline for money code
@@ -376,6 +400,24 @@ HTML `no-cache`.
 
 **Run the app under a supervisor** (systemd unit or equivalent) with restart-on-failure and
 start-on-boot. A process started by hand *will* be down after a reboot and nobody will notice.
+
+**"Never ran" must not render as "healthy".** A health check that flags only known-bad values
+(`error`, `not_found`) treats the NULL of a job that has never fired as fine. We found every
+watch folder configured, none with an enabled schedule — so no cron job existed, not one had
+ever run, and the dashboard said "Watch folders healthy" while every file was in fact being
+uploaded by hand. A status field is a **tri-state**: ok / failed / never-ran, and the third is
+the one that hides. Assert on the *existence of a recent successful run*, not on the absence of
+an error — and check that the thing which actually schedules the job (an enabled schedule row,
+not merely the config) exists.
+
+**A swallowed exception needs a log line and a return value, not just a comment.** A background
+ingest path deliberately never fails the upload when a post-step (recon, cross-date pass,
+dedup) throws — correct, but it was six bare `except: pass` in a module with no logging import
+at all, so the caller wrote `status = "success"` on a run whose entire matching chain had
+failed. Keep the swallow; collect the errors into a list, log each one, return them, and let
+the caller report the truth. When the same pipeline exists in two copies (interactive + watch
+folder), the log points must be mirrored too — otherwise only the path a human watches is
+observable.
 
 **Back up on a schedule, and prove it restores.** A consistent, compressed dump on a cron with
 retention. When you move it, update the schedule and the script paths **together**, then run it

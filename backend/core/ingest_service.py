@@ -11,6 +11,7 @@ matching, auto-recon, and NEFT D+1.
 
 import os
 import json
+import logging
 import re
 import datetime
 import shutil
@@ -18,6 +19,11 @@ import uuid
 from typing import Optional
 
 from sqlalchemy.orm import Session
+
+# Same logger as routes/upload.py: the watch-folder path used to swallow every
+# post-ingest failure silently, so a file could "ingest OK" while auto-recon,
+# NEFT D+1 or the internal self-match had all failed and nobody could tell.
+logger = logging.getLogger("eko_recon")
 
 from models.database import (
     UploadSession, Transaction, UploadStatus, generate_id,
@@ -529,6 +535,13 @@ def _ingest_dataframe_inner(
         except Exception:
             pass   # snapshots must never block the watch-folder ingest
 
+    # Post-ingest failures are collected (never raised — contract #4: a matching
+    # error must not fail the upload) and returned so the CALLER can report the
+    # truth. The scheduler used to write last_trigger_status='success' whenever
+    # ingest_dataframe returned, which it always did, even with the whole recon
+    # chain broken.
+    post_errors: list = []
+
     # ── Reversal matching ─────────────────────────────────────────────────────
     reversal_results = {}
     if is_bank_side:
@@ -541,8 +554,9 @@ def _ingest_dataframe_inner(
                     rev_r = run_reversal_match(p, d, db, user_id)
                     if rev_r["reversal_matched"] > 0:
                         reversal_results[f"{p}/{d}"] = rev_r
-                except Exception:
-                    pass
+                except Exception as _e:
+                    post_errors.append(f"reversal {p}/{d}: {_e}")
+                    logger.warning(f"core/ingest_service.py: {_e}")  # reversal errors don't block the ingest
 
     # ── Auto-recon: runs after BOTH bank AND internal uploads ─────────────────
     auto_recon_results = {}
@@ -567,23 +581,26 @@ def _ingest_dataframe_inner(
                     br = run_bank_reversal_match(p, d, db, user_id)
                     if br.get("bank_reversal_matched", 0) > 0:
                         bank_reversal_results[f"{p}/{d}"] = br
-                except Exception:
-                    pass
+                except Exception as _e:
+                    post_errors.append(f"recon {p}/{d}: {_e}")
+                    logger.warning(f"core/ingest_service.py: {_e}")  # recon errors don't block the ingest
                 if is_internal_side:   # NEFT D+1 only makes sense after internal upload
                     try:
                         neft_r = run_neft_d1_match(p, d, db, user_id)
                         if neft_r["neft_d1_matched"] > 0:
                             neft_d1_results[f"{p}/{d}"] = neft_r
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        post_errors.append(f"neft-d1 {p}/{d}: {_e}")
+                        logger.warning(f"core/ingest_service.py: {_e}")  # NEFT D+1 errors don't block the ingest
                     # Internal self-match: net off DR/CR contra pairs (and
                     # Success+Refund) within the dump. Runs after auto-recon/NEFT
                     # so bank-matched rows are left untouched. All products.
                     try:
                         from core.matching_engine import run_internal_match
                         run_internal_match(p, d, db, user_id)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        post_errors.append(f"internal-match {p}/{d}: {_e}")
+                        logger.warning(f"core/ingest_service.py: {_e}")  # internal-match errors don't block the ingest
         # Cross-date RRN pass (QR T+1) — mirrors routes/upload.py (contract #10):
         # bank credit on D vs internal record on D+1 never meet in per-date recon;
         # identifier-only (RRN + amount ≤ ₹1) across dates, scoped partners only.
@@ -591,8 +608,9 @@ def _ingest_dataframe_inner(
             from core.matching_engine import run_cross_date_rrn_match, CROSS_DATE_RRN_PARTNERS
             for p in set(p for (p, _d) in pairs if p in CROSS_DATE_RRN_PARTNERS):
                 run_cross_date_rrn_match(p, db, user_id)
-        except Exception:
-            pass
+        except Exception as _e:
+            post_errors.append(f"cross-date-rrn: {_e}")
+            logger.warning(f"core/ingest_service.py: {_e}")  # cross-date errors don't block the ingest
 
     # ── Same-side duplicate flagging (re-ingested rows) ───────────────────────
     # Mirrors routes/upload.py (contract #10): flag txn rows that duplicate an
@@ -605,8 +623,9 @@ def _ingest_dataframe_inner(
             dr = flag_same_side_duplicates(p, session.side, db)
             if dr["duplicates_flagged"] > 0:
                 duplicate_results[f"{p}/{session.side}"] = dr
-    except Exception:
-        pass
+    except Exception as _e:
+        post_errors.append(f"dedup: {_e}")
+        logger.warning(f"core/ingest_service.py: {_e}")  # dedup errors don't block the ingest
 
     # ── Upload history ────────────────────────────────────────────────────────
     display_date = "auto (multi-date)" if is_auto_date else session.recon_date
@@ -667,4 +686,5 @@ def _ingest_dataframe_inner(
         "reversal_auto":           reversal_results   if is_bank_side     else {},
         "bank_reversal_auto":      bank_reversal_results,
         "duplicate_flagged":       duplicate_results,
+        "post_errors":             post_errors,
     }

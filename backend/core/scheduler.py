@@ -113,11 +113,20 @@ def _run_auto_upload_job(config_id: str):
         )
 
         msg = f"Ingested {result['row_count']} txn rows from {expected_name} (format: {preset_lbl})"
-        config.last_trigger_status  = "success"
+        # The rows landing is NOT the whole job. ingest_dataframe deliberately never
+        # raises on a post-ingest failure (contract #4), so it returns normally even
+        # when auto-recon / NEFT D+1 / the internal self-match all blew up — which is
+        # how a silently half-done run kept reporting "success" and recon_health kept
+        # calling the folder healthy. Report what actually happened.
+        _perr = result.get("post_errors") or []
+        status = "partial" if _perr else "success"
+        if _perr:
+            msg = f"{msg} — but {len(_perr)} post-ingest step(s) failed: {_perr[0]}"
+        config.last_trigger_status  = status
         config.last_trigger_message = msg
         db.commit()
-        _update_schedule_run(db, config_id, run_at, "success", msg)
-        logger.info(f"[scheduler] {msg}")
+        _update_schedule_run(db, config_id, run_at, status, msg)
+        (logger.warning if _perr else logger.info)(f"[scheduler] {msg}")
 
     except Exception as e:
         err = str(e)
