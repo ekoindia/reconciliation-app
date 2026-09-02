@@ -3227,6 +3227,15 @@ def _picker_open_fingerprint(db, d):
         # P01 reconciles settlements by their deduct date (D+1/D+2), so a P01 re-run for ANY date
         # can change reconcile(d)'s settlement status — fingerprint P01 globally.
         db.query(_F.count(SBIP01Result.id), _F.max(SBIP01Result.created_at)).one(),
+        # reconcile() ALSO overlays SBIManualPair onto its bank rows (core/sbi_reports.py), which
+        # changes the very "Match Status" this cache filters on — so a pair created or DELETED
+        # moves reconcile's bank-open set. Without this the cache served a stale set and the
+        # picker disagreed with All Entries for the same date (operator: All Entries 2 open,
+        # Manual Match 1). Unpairing is the case that shows FEWER: the row is open again
+        # everywhere else while the cached set still omits it. Global, not per-date: a pair's two
+        # legs may sit on DIFFERENT dates, so a pair written for one date can change reconcile()
+        # for another. Pairs change rarely next to reads, so the cache keeps its purpose.
+        db.query(_F.count(SBIManualPair.id), _F.max(SBIManualPair.created_at)).one(),
     )
 
 def _picker_report_open_ids(db, d):
