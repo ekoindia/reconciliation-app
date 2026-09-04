@@ -1688,7 +1688,17 @@ _MATCHED_UNIFIED = {"Matched", "Manual_Matched", "Matched (Settlement)"}
 # _MATCHED_UNIFIED so it stays its own honest bucket in the all-entries report (never inflates
 # the match rate). Analytics is P02/P03-result-based, so failed txn rows never reached it — this
 # only cleans the unified view + pair-picker.
-_CLOSED_UNIFIED = _MATCHED_UNIFIED | {"Failed"}
+# A source-FAILED txn that DID reconcile against a bank movement. The bank really moved the
+# money, but the transaction failed — so the two records agreeing is NOT a clean reconciliation,
+# it is an exception somebody has to chase (money out on a failed txn should have come back as a
+# reversal credit). Operator rule: "data side ki koi bhi failed transaction bank statement ki
+# transaction se match nhi hona chahiye". Read-time only, and deliberately NOT in
+# _MATCHED_UNIFIED, so it stops reading as Matched and gets its own honest bucket in the unified
+# view + all-entries report. It stays in _CLOSED_UNIFIED because the row IS already associated
+# with a bank row — re-offering it in the pair-picker would invite a double match.
+# Analytics/match-rate are P02-RESULT-based and are intentionally left untouched here.
+_FAILED_BANK_MOVED = "Failed (Bank Movement)"
+_CLOSED_UNIFIED = _MATCHED_UNIFIED | {"Failed", _FAILED_BANK_MOVED}
 
 
 def _is_txn_failed(status):
@@ -1873,6 +1883,11 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
             if r:
                 e.update(status=r.match_status, process="P02", result_id=r.id, result_process="p02", _result=r,
                          counterpart=(f"Report {_r(r.report_amount)} · {r.report_txn_type}" if r.report_amount is not None else None))
+                # …unless the report row it matched had FAILED — then this bank movement is an
+                # exception, not a reconciliation. Flip BOTH legs (see the data side below) so
+                # the pair never reads as Matched on either side.
+                if r.match_status in _MATCHED_UNIFIED and _is_txn_failed(r.success_status):
+                    e["status"] = _FAILED_BANK_MOVED
             if drcr == "CR" and (b.ko_id, round(float(amt), 2)) in p03_matched:
                 e["also_p03"] = True
                 if e["status"] in ("Unmatched", "Not reconciled"):
@@ -1891,6 +1906,9 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
         if r:
             e.update(status=r.match_status, process="P02", result_id=r.id, result_process="p02", _result=r,
                      counterpart=f"Bank {r.bank_type} {_r(r.bank_amount)}")
+            # A failed txn must not read as Matched against a real bank movement (operator rule).
+            if r.match_status in _MATCHED_UNIFIED and _is_txn_failed(r.success_status):
+                e["status"] = _FAILED_BANK_MOVED
         else:
             pr = p03_by_txn.get((t.ko_id, round(float(amt), 2), t.reference_number or ""))
             if pr:
@@ -1903,7 +1921,7 @@ def _unified_entries(db, recon_date, include_deposits=False, sides=None):
         # money moved, nothing to pair — so it must not sit "open" in the pair-picker or read as
         # an exception. Fire ONLY on an un-matched row (a failed txn that DID move money is already
         # P02-Matched above and stays Matched). Distinct "Failed" bucket, never folded into Matched.
-        if e["status"] not in _MATCHED_UNIFIED and _is_txn_failed(t.status):
+        if e["status"] not in _CLOSED_UNIFIED and _is_txn_failed(t.status):
             e["status"] = "Failed"
         entries.append(e)
 

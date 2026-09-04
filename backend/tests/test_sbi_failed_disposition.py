@@ -11,7 +11,8 @@ from sqlalchemy.orm import sessionmaker
 
 from models.database import Base, SBITxnReport, SBIP02Result
 from routes.sbi_kiosk import (_unified_entries, manual_pair_open_items,
-                              _MATCHED_UNIFIED, _CLOSED_UNIFIED, _is_txn_failed)
+                              _MATCHED_UNIFIED, _CLOSED_UNIFIED, _is_txn_failed,
+                              _FAILED_BANK_MOVED)
 
 RD = "2026-06-25"
 
@@ -59,9 +60,23 @@ def test_success_and_blank_never_reclassified(db):
     assert st["bl"] == "Unmatched"      # blank/unknown status left alone
 
 
-def test_failed_but_money_moved_stays_matched(db):
-    # the ~739-row safety case: failed txn WITH a P02 bank leg must NOT be hidden as Failed
-    assert _status(db)["fm"] == "Matched"
+def test_failed_but_money_moved_is_its_own_bucket(db):
+    # POLICY CHANGE (2026-09-04, authorised by himanshu — "Option A"). This case used to assert
+    # `== "Matched"`: a failed txn WITH a P02 bank leg was left Matched on the reasoning that the
+    # bank and the report agreed on the movement.
+    #
+    # The operator rejected that: "data side ki koi bhi failed transaction bank statement ki
+    # transaction se match nhi hona chahiye". He is right — the bank moved real money for a
+    # transaction that FAILED, which should have returned as a reversal credit. Production held
+    # 758 such rows (~Rs 70.9 lakh), of which 457 debits (~Rs 51.7 lakh net) had no offsetting
+    # credit, all invisible inside "Matched".
+    #
+    # It still must NOT be hidden as plain "Failed" (that bucket means "no money moved") — hence
+    # its own bucket. Read-time only: the stored P02 result stays "Matched", so analytics and the
+    # reported match rate do not move. See tests/test_sbi_failed_bank_movement.py.
+    assert _status(db)["fm"] == _FAILED_BANK_MOVED
+    assert _FAILED_BANK_MOVED not in _MATCHED_UNIFIED     # never counted as a clean match
+    assert _FAILED_BANK_MOVED in _CLOSED_UNIFIED          # but still not re-offered for pairing
 
 
 def test_failed_is_distinct_closed_bucket_not_matched():

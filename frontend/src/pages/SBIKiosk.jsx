@@ -40,6 +40,7 @@ const META = {
     'Unmatched Settlement': { label: 'Settlement pending', tone: 'amber', hint: 'Settlement debit not yet reconciled in P01 (D+1/D+2) — resolves when the KO Limits / next-day files load. Not a customer exception.' },
     Reversal:       { label: 'Reversal',       tone: 'purple', hint: 'The same reference appears as both a debit and a credit — the two legs are bracketed together.' },
     Manual_Matched: { label: 'Manual',         tone: 'amber',  hint: 'Resolved by hand; persists across re-runs.' },
+    'Failed (Bank Movement)': { label: 'Failed — bank moved', tone: 'red', hint: 'The reference matched a bank line, but the transaction FAILED. Money left (or returned to) the account for a transaction that did not succeed — chase the reversal. Never counted as matched.' },
   },
   p03: {
     Matched:             { label: 'Matched',        tone: 'green',  hint: 'Money paid out matches a bank credit on CSP + amount (within ±2 days).' },
@@ -1027,6 +1028,9 @@ function P04Tab({ reconDate, setReconDate }) {
 const U_TONE = {
   Matched: 'green', 'Matched (Settlement)': 'green', Reversal: 'purple', Partial: 'orange', 'Amount Mismatch': 'orange',
   Pending: 'amber', Excess: 'purple', Unmatched: 'red', 'Unmatched Settlement': 'amber', 'Not reconciled': 'gray', Manual_Matched: 'amber',
+  // Failed txn whose money still moved in the bank — an exception to chase, so red, and
+  // deliberately NOT green: it must never read as a clean match.
+  'Failed (Bank Movement)': 'red', Failed: 'gray',
 }
 function UStatus({ s }) {
   return <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${TONE[U_TONE[s] || 'gray']}`}>{s}</span>
