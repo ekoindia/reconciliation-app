@@ -107,7 +107,15 @@ def _run_auto_upload_job(config_id: str):
             session=session,
             mapping_dict=mapping_resolved,
             db=db,
-            user_id="system",
+            # user_id must be NULL, not the literal "system": there is no user with that id, and
+            # both audit_logs.user_id and recon_runs.user_id are FOREIGN KEYs to users.id. Passing
+            # "system" made every downstream write raise IntegrityError(1452) — and because the
+            # post-ingest chain swallows its exceptions (contract #4), a watch-folder upload would
+            # ingest its rows and then SILENTLY fail to reconcile them. It never bit in production
+            # only because no watch folder has ever actually run. Both columns are nullable.
+            # The audit-source classification keys on USERNAME, not user_id, so "auto-upload"
+            # below still tags these as automated.
+            user_id=None,
             username="auto-upload",
             do_auto_recon=config.auto_recon,
         )
