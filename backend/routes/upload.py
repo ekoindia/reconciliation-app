@@ -988,8 +988,22 @@ def _classify_bank_row(row: dict, df_columns: list) -> tuple:
     if re.search(r'Customer\s+Registration\s+for\s+DMT', desc, re.IGNORECASE):
         return ("fee_charge", "fee_matched")
 
-    # Fund transfer rows (e.g. FUND TRANSFER, FT/, TRF TO)
-    if re.search(r'FUND\s*TRANS|FT\s*/|TRF\s*TO|TRANSFER\s*TO', desc, re.IGNORECASE):
+    # Fund transfer rows (e.g. FUND TRANSFER, FT/, TRF TO) - auto-closed, so this branch must
+    # never swallow a customer transaction.
+    #
+    # The \b on FT/ is LOAD-BEARING. Unanchored, `FT\s*/` also matches the TAIL of "NEFT/",
+    # so every Axis NEFT DMT payout was classified as an own-account fund transfer, dropped
+    # from reconciliation, and left its internal counterpart open forever with no way to pair
+    # it: Manual Match lists only unmatched/src_assigned, so the bank leg was unreachable and
+    # clearing its SRC did nothing (it was never src_assigned).
+    #
+    # Production held 341 such rows - 339 carrying an Eko TID, 331 with an open internal twin
+    # on the same partner+date, ~Rs 2.08 crore, growing ~25-44/day. All 339 narrations began
+    # with "NEFT", and 0 of them match once anchored.
+    #
+    # Anchoring is deliberately preferred over gating this branch on DR/CR: a genuine OUTBOUND
+    # own-account transfer is also a debit and must stay auto-closed.
+    if re.search(r'FUND\s*TRANS|\bFT\s*/|TRF\s*TO|TRANSFER\s*TO', desc, re.IGNORECASE):
         return ("fund_transfer", "fund_transfer")
 
     # Pure-credit rows via separate Debit/Credit columns (Fino PTA Bank style)
